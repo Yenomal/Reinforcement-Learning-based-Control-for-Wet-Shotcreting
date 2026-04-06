@@ -9,13 +9,16 @@ It does not sample tasks and does not run any planner.
 
 import os
 import webbrowser
+from pathlib import Path
 
 import plotly.graph_objects as go
 
-from src.rock_env.rock_wall import (
-    D_SPRAY,
+from ..config import load_config
+from .rock_wall import (
     K_SLUMP,
     L_TUNNEL,
+    N_THETA,
+    N_Z,
     NOISE_AMPLITUDE,
     NOISE_OCTAVES,
     NOISE_PERSISTENCE,
@@ -26,7 +29,6 @@ from src.rock_env.rock_wall import (
 )
 
 
-HTML_OUTPUT = "rock_environment.html"
 FIG_WIDTH = 1400
 FIG_HEIGHT = 900
 def create_rock_surface_mesh(rock_env: dict) -> tuple:
@@ -81,13 +83,16 @@ def create_visualization(rock_env: dict) -> go.Figure:
 
 def main() -> None:
     """Generate the environment and visualize it."""
+    cfg = load_config()
+    env_cfg = cfg.get("env", {})
+    output_cfg = cfg.get("output", {})
+
     print("=" * 68)
     print("Shotcrete Tunnel Rock Environment")
     print("=" * 68)
     print("\n[Environment]")
     print(f"  Base tunnel radius: {R_BASE:.2f} m")
     print(f"  Tunnel length: {L_TUNNEL:.2f} m")
-    print(f"  Spray distance: {D_SPRAY:.2f} m")
     print(
         "  Noise settings: "
         f"scale={NOISE_SCALE}, octaves={NOISE_OCTAVES}, persistence={NOISE_PERSISTENCE}"
@@ -95,15 +100,23 @@ def main() -> None:
     print(f"  Noise amplitude: {NOISE_AMPLITUDE:.2f} m")
     print(f"  Gravity slump coefficient: {K_SLUMP:.2f}")
 
-    rock_env = generate_rock_environment(seed=NOISE_SEED)
+    rock_env = generate_rock_environment(
+        n_theta=int(env_cfg.get("n_theta", N_THETA)),
+        n_z=int(env_cfg.get("n_z", N_Z)),
+        seed=int(env_cfg.get("seed", NOISE_SEED)),
+    )
 
     print(f"\n  Surface sample count: {len(rock_env['points'])}")
 
     print("\n[Visualization]")
     fig = create_visualization(rock_env)
 
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), HTML_OUTPUT)
-    fig.write_html(output_path, include_plotlyjs=True, auto_open=False)
+    project_root = Path(__file__).resolve().parents[2]
+    output_relative = output_cfg.get("rock_env_html", "outputs/rock_environment.html")
+    output_path = project_root / output_relative
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig.write_html(str(output_path), include_plotlyjs=True, auto_open=False)
     print(f"  Output: {output_path}")
     webbrowser.open(f"file://{output_path}")
 

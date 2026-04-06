@@ -1,0 +1,14 @@
+env:
+  seed: 42
+  n_theta: 200
+  n_z: 100
+
+planner:
+  seed: 0
+  margin_ratio: 0.05
+  min_start_goal_ratio: 0.30
+  normal_neighbors: 32
+  retreat_distance: 1.0
+
+output:
+  rock_env_html: outputs/rock_environment.html

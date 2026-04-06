@@ -8,7 +8,6 @@ This module only provides the environment geometry itself:
 - surface queries in the parameter space
 - finite-difference normals
 - gravity-slump compensation
-- nozzle target queries
 
 It does not include any planner.
 """
@@ -33,7 +32,6 @@ except ImportError:
 # Tunnel geometry
 R_BASE = 4.0
 L_TUNNEL = 10.0
-D_SPRAY = 1.5
 
 # Surface parameter bounds
 U_MIN = 0.0
@@ -376,7 +374,6 @@ def query_surface_state(
     u: float,
     v: float,
     noise_gen: Optional[NoiseGenerator] = None,
-    d_spray: float = D_SPRAY,
     k_slump: float = K_SLUMP,
     delta: float = DELTA,
 ) -> Dict[str, np.ndarray]:
@@ -388,7 +385,6 @@ def query_surface_state(
     normal = surface_normal(u, v, noise_gen=noise_gen, delta=delta)
     slump_vector = gravity_slump_vector(normal, k_slump=k_slump)
     compensated_point = raw_point + slump_vector
-    nozzle_point = compensated_point - normal * d_spray
 
     return {
         "u": float(u),
@@ -397,7 +393,6 @@ def query_surface_state(
         "normal": normal,
         "slump_vector": slump_vector,
         "compensated_point": compensated_point,
-        "nozzle_point": nozzle_point,
     }
 
 
@@ -444,7 +439,6 @@ def generate_rock_environment(
         "v_bounds": (V_MIN, V_MAX),
         "R_BASE": R_BASE,
         "L_TUNNEL": L_TUNNEL,
-        "D_SPRAY": D_SPRAY,
         "NOISE_AMPLITUDE": NOISE_AMPLITUDE,
     }
 
@@ -469,7 +463,6 @@ def generate_dense_rock_wall(
 
 __all__ = [
     "DELTA",
-    "D_SPRAY",
     "K_SLUMP",
     "L_TUNNEL",
     "NOISE_AMPLITUDE",
