@@ -1,0 +1,4 @@
+.cursor/
+.venv/
+__pycache__/
+docs/
