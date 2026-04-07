@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from ..component.disturbance import SensorNoise
 from ..component.planner import sample_planner_task_from_environment
 from ..rock_env.rock_wall import generate_rock_environment, query_surface_state
 
@@ -20,10 +21,12 @@ class MathEnv:
         env_cfg: Dict[str, Any],
         planner_cfg: Dict[str, Any],
         rl_cfg: Dict[str, Any],
+        disturbance_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.env_cfg = dict(env_cfg)
         self.planner_cfg = dict(planner_cfg)
         self.rl_cfg = dict(rl_cfg)
+        self.disturbance_cfg = dict(disturbance_cfg or {})
 
         self.rock_env = generate_rock_environment(
             n_theta=int(self.env_cfg.get("n_theta", 200)),
@@ -57,6 +60,9 @@ class MathEnv:
             self.rl_cfg.get("action_smoothness_weight", 0.01)
         )
         self.boundary_penalty = float(self.rl_cfg.get("boundary_penalty", 0.1))
+        self.sensor_noise = SensorNoise(
+            self.disturbance_cfg.get("sensor_noise", {})
+        )
 
         self._rng = np.random.default_rng(int(self.planner_cfg.get("seed", 0)))
         self.observation_dim = 9
@@ -68,6 +74,7 @@ class MathEnv:
         self.current_step = 0
         self.episode_return = 0.0
         self.previous_goal_distance = 0.0
+        self.min_goal_distance = float("inf")
         self.current_task: Optional[Dict[str, Any]] = None
         self.current_surface_state: Optional[Dict[str, Any]] = None
         self.path_uv: list[np.ndarray] = []
@@ -97,7 +104,9 @@ class MathEnv:
         self.current_step = 0
         self.episode_return = 0.0
         self.previous_goal_distance = self._goal_distance(self.current_uv)
+        self.min_goal_distance = self.previous_goal_distance
         self.current_surface_state = self._query_runtime_state(self.current_uv)
+        self.sensor_noise.reset_episode(self._rng)
 
         self.path_uv = [self.current_uv.copy()]
         self.path_surface = [self.current_surface_state["compensated_point"].copy()]
@@ -150,6 +159,7 @@ class MathEnv:
 
         self.episode_return += reward
         self.previous_goal_distance = goal_distance
+        self.min_goal_distance = min(self.min_goal_distance, goal_distance)
         self.prev_action = clipped_action.astype(np.float32)
 
         self.path_uv.append(self.current_uv.copy())
@@ -185,9 +195,16 @@ class MathEnv:
         return 2.0 * normalized - 1.0
 
     def _build_observation(self) -> np.ndarray:
-        current_uv_norm = self._normalize_uv(self.current_uv)
-        goal_uv_norm = self._normalize_uv(self.goal_uv)
-        delta_uv_norm = (self.goal_uv - self.current_uv) / np.maximum(self.uv_span, 1e-6)
+        observed_current_uv, observed_goal_uv = self.sensor_noise.apply(
+            self.current_uv,
+            self.goal_uv,
+            self._rng,
+        )
+        current_uv_norm = self._normalize_uv(observed_current_uv)
+        goal_uv_norm = self._normalize_uv(observed_goal_uv)
+        delta_uv_norm = (observed_goal_uv - observed_current_uv) / np.maximum(
+            self.uv_span, 1e-6
+        )
         step_ratio = np.array(
             [self.current_step / max(self.max_episode_steps, 1)],
             dtype=np.float32,
@@ -237,5 +254,6 @@ class MathEnv:
                 "return": float(self.episode_return),
                 "length": int(self.current_step),
                 "success": bool(success),
+                "min_goal_distance_uv": float(self.min_goal_distance),
             }
         return info

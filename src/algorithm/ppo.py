@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
-from ..component.rollout_buffer import RolloutBatch
+from ..component.buffer import OnPolicyBatch
 from ..model.mlp import MLP
 
 
@@ -99,7 +99,7 @@ class PPOAgent:
         return log_prob, entropy, value
 
     def compute_returns_and_advantages(
-        self, batch: RolloutBatch
+        self, batch: OnPolicyBatch
     ) -> tuple[torch.Tensor, torch.Tensor]:
         rewards = batch.rewards
         dones = batch.dones
@@ -126,7 +126,7 @@ class PPOAgent:
         returns = advantages + values
         return returns, advantages
 
-    def update(self, batch: RolloutBatch) -> Dict[str, float]:
+    def update(self, batch: OnPolicyBatch) -> Dict[str, float]:
         returns, advantages = self.compute_returns_and_advantages(batch)
 
         observations = batch.observations

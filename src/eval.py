@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from .algorithm.ppo import PPOAgent
+from .algorithm.sac import SACAgent
 from .config import load_config
 from .rl_env.math_env import MathEnv
 
@@ -286,6 +287,7 @@ class EvalRenderer:
         total_episodes: int,
         episode_return: float,
         success: bool,
+        min_goal_distance: float,
     ) -> None:
         """Show one short episode-end status before the next task starts."""
         self.status_text.set_text(
@@ -294,6 +296,7 @@ class EvalRenderer:
                     f"Episode {episode_index}/{total_episodes} finished",
                     f"Return: {episode_return:.3f}",
                     f"Success: {success}",
+                    f"Min dist: {min_goal_distance:.4f}",
                 ]
             )
         )
@@ -330,28 +333,45 @@ def build_agent_from_checkpoint(
     checkpoint: Dict[str, Any],
     config: Dict[str, Any],
     device: torch.device,
-) -> PPOAgent:
-    """Recreate the PPO agent and load trained weights."""
+) -> PPOAgent | SACAgent:
+    """Recreate the configured agent and load trained weights."""
     algorithm_name = str(config.get("algorithm", {}).get("name", "ppo")).lower()
-    if algorithm_name != "ppo":
-        raise ValueError("The current eval entry only supports PPO checkpoints.")
 
     model_cfg = config.get("model", {})
-    algorithm_cfg = dict(config.get("ppo", {}))
-    algorithm_cfg["gamma"] = float(config.get("algorithm", {}).get("gamma", 0.99))
-
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
-    env = MathEnv(env_cfg=env_cfg, planner_cfg=planner_cfg, rl_cfg=rl_cfg)
-
-    agent = PPOAgent(
-        observation_dim=env.observation_dim,
-        action_dim=env.action_dim,
-        model_cfg=model_cfg,
-        algorithm_cfg=algorithm_cfg,
-        device=device,
+    disturbance_cfg = config.get("disturbance", {})
+    env = MathEnv(
+        env_cfg=env_cfg,
+        planner_cfg=planner_cfg,
+        rl_cfg=rl_cfg,
+        disturbance_cfg=disturbance_cfg,
     )
+
+    if algorithm_name == "ppo":
+        algorithm_cfg = dict(config.get("ppo", {}))
+        algorithm_cfg["gamma"] = float(config.get("algorithm", {}).get("gamma", 0.99))
+        agent: PPOAgent | SACAgent = PPOAgent(
+            observation_dim=env.observation_dim,
+            action_dim=env.action_dim,
+            model_cfg=model_cfg,
+            algorithm_cfg=algorithm_cfg,
+            device=device,
+        )
+    elif algorithm_name == "sac":
+        algorithm_cfg = dict(config.get("sac", {}))
+        algorithm_cfg["gamma"] = float(config.get("algorithm", {}).get("gamma", 0.99))
+        agent = SACAgent(
+            observation_dim=env.observation_dim,
+            action_dim=env.action_dim,
+            model_cfg=model_cfg,
+            algorithm_cfg=algorithm_cfg,
+            device=device,
+        )
+    else:
+        raise ValueError(f"Unsupported algorithm: {algorithm_name}")
+
     agent.load_policy_state(checkpoint["state_dict"])
     return agent
 
@@ -385,8 +405,14 @@ def main() -> None:
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    disturbance_cfg = config.get("disturbance", {})
 
-    env = MathEnv(env_cfg=env_cfg, planner_cfg=planner_cfg, rl_cfg=rl_cfg)
+    env = MathEnv(
+        env_cfg=env_cfg,
+        planner_cfg=planner_cfg,
+        rl_cfg=rl_cfg,
+        disturbance_cfg=disturbance_cfg,
+    )
     agent = build_agent_from_checkpoint(checkpoint, config, device=device)
 
     total_episodes = int(args.episodes or eval_cfg.get("episodes", 5))
@@ -409,6 +435,7 @@ def main() -> None:
     returns = []
     lengths = []
     success_flags = []
+    min_goal_distances = []
 
     print("=" * 72)
     print("MathEnv Evaluation")
@@ -462,12 +489,14 @@ def main() -> None:
         returns.append(float(episode_summary["return"]))
         lengths.append(int(episode_summary["length"]))
         success_flags.append(1.0 if episode_summary["success"] else 0.0)
+        min_goal_distances.append(float(episode_summary["min_goal_distance_uv"]))
 
         print(
             f"[Episode {episode_index:03d}] "
             f"reward={episode_summary['return']:.3f} "
             f"length={episode_summary['length']} "
-            f"success={episode_summary['success']}"
+            f"success={episode_summary['success']} "
+            f"min_dist={episode_summary['min_goal_distance_uv']:.4f}"
         )
 
         if renderer is not None:
@@ -476,16 +505,21 @@ def main() -> None:
                 total_episodes=total_episodes,
                 episode_return=float(episode_summary["return"]),
                 success=bool(episode_summary["success"]),
+                min_goal_distance=float(episode_summary["min_goal_distance_uv"]),
             )
 
     mean_reward = float(np.mean(returns)) if returns else float("nan")
     mean_length = float(np.mean(lengths)) if lengths else float("nan")
     success_rate = float(np.mean(success_flags)) if success_flags else float("nan")
+    mean_min_goal_distance = (
+        float(np.mean(min_goal_distances)) if min_goal_distances else float("nan")
+    )
 
     print("\nEvaluation summary")
     print(f"  Mean reward: {mean_reward:.3f}")
     print(f"  Mean length: {mean_length:.2f}")
     print(f"  Success rate: {success_rate:.3f}")
+    print(f"  Mean min goal distance: {mean_min_goal_distance:.4f}")
 
     if renderer is not None:
         renderer.finalize()
