@@ -85,7 +85,6 @@ def main() -> None:
     """Generate the environment and visualize it."""
     cfg = load_config()
     env_cfg = cfg.get("env", {})
-    output_cfg = cfg.get("output", {})
 
     print("=" * 68)
     print("Shotcrete Tunnel Rock Environment")
@@ -112,7 +111,7 @@ def main() -> None:
     fig = create_visualization(rock_env)
 
     project_root = Path(__file__).resolve().parents[2]
-    output_relative = output_cfg.get("rock_env_html", "outputs/rock_environment.html")
+    output_relative = env_cfg.get("rock_env_html", "outputs/rock_environment.html")
     output_path = project_root / output_relative
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

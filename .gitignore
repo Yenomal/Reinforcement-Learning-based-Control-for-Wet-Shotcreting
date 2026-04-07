@@ -1,3 +1,7 @@
+#### environment
 .venv/
 **/__pycache__/
 docs/
+
+#### outputs
+outputs/

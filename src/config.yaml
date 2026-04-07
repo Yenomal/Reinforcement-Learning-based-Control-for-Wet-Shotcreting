@@ -1,14 +1,79 @@
+# 环境参数
 env:
-  seed: 42
-  n_theta: 200
-  n_z: 100
+  seed: 42                            # 环境随机种子
+  n_theta: 200                        # 岩壁周向采样数
+  n_z: 100                            # 岩壁轴向采样数
+  rock_env_html: outputs/rock_environment.html # 岩壁可视化输出
 
+# 任务采样参数
 planner:
-  seed: 0
-  margin_ratio: 0.05
-  min_start_goal_ratio: 0.30
-  normal_neighbors: 32
-  retreat_distance: 1.0
+  seed: 42                   # 任务随机种子
+  margin_ratio: 0.05         # 起终点边界留白比例
+  min_start_goal_ratio: 0.30 # 起终点最小间距比例
+  normal_neighbors: 32       # 法向估计邻居数
+  retreat_distance: 1.0      # 沿法向回退距离
 
-output:
-  rock_env_html: outputs/rock_environment.html
+# 强化学习环境参数
+rl:
+  max_episode_steps: 200      # 单局最大步数
+  goal_tolerance_uv: 0.20     # 到达目标的阈值
+  action_scale_u: 0.20        # u 方向动作步长
+  action_scale_v: 0.20        # v 方向动作步长
+  progress_reward_weight: 1.0 # 朝目标前进奖励权重
+  success_reward: 20.0        # 到达终点奖励
+  step_penalty: 0.01          # 每步基础惩罚
+  action_l2_weight: 0.001     # 动作幅度惩罚
+  action_smoothness_weight: 0.01 # 动作变化惩罚
+  boundary_penalty: 0.10      # 边界裁剪惩罚
+
+# 模型参数
+model:
+  hidden_sizes: [256, 256] # MLP 隐藏层大小
+  activation: tanh         # MLP 激活函数
+  init_log_std: -0.5       # 初始动作方差对数
+
+# 算法公共参数
+algorithm:
+  name: ppo   # 当前算法名称
+  gamma: 0.99 # 折扣因子
+
+# PPO 专有参数
+ppo:
+  lr: 3.0e-4                 # 学习率
+  gae_lambda: 0.95           # GAE 参数
+  clip_ratio: 0.2            # PPO 截断系数
+  value_coef: 0.5            # 值函数损失权重
+  entropy_coef: 0.0          # 熵奖励权重
+  max_grad_norm: 0.5         # 梯度裁剪上限
+  rollout_steps: 1024        # 每次更新采样步数
+  update_epochs: 10          # 每次更新轮数
+  minibatch_size: 256        # 小批量大小
+  normalize_advantages: true # 是否归一化优势
+
+# SAC 预留参数
+sac:
+  actor_lr: 3.0e-4  # actor 学习率
+  critic_lr: 3.0e-4 # critic 学习率
+  alpha_lr: 3.0e-4  # 熵系数学习率
+  tau: 0.005        # 目标网络软更新系数
+  batch_size: 256   # 采样批量大小
+  buffer_size: 100000 # 回放池大小
+
+# 训练入口参数
+train:
+  seed: 42                   # 训练随机种子
+  device: cpu                # 训练设备
+  total_updates: 200         # 总更新次数
+  log_interval: 1            # 终端打印间隔
+  save_interval: 10          # 权重保存间隔
+  run_name: ppo_math_env     # 本次运行名称
+  runs_root: outputs/runs    # 训练输出根目录
+
+# 评估参数
+eval:
+  checkpoint: "./outputs/runs/ppo_math_env_20260406_191355/best.pt"      # 默认权重路径
+  episodes: 5         # 评估回合数
+  seed: 123           # 评估随机种子
+  headless: false     # 是否关闭可视化
+  render_pause: 0.05  # 渲染刷新间隔
+  episode_pause: 0.8  # 回合切换停顿
