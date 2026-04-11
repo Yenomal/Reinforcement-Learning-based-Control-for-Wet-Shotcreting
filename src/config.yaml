@@ -16,31 +16,31 @@ planner:
 # 扰动参数
 disturbance:
   sensor_noise:
-    enable: true                # 是否开启传感器噪声
-    current_uv_step_std: 0.001     # 当前 uv 每步高斯噪声
-    current_uv_bias_std: 0.002     # 当前 uv 每局固定偏置
+    enable: false                # 是否开启传感器噪声
+    current_uv_step_std: 0.01     # 当前 uv 每步高斯噪声
+    current_uv_bias_std: 0.02     # 当前 uv 每局固定偏置
     goal_uv_step_std: 0.0        # 目标 uv 每步高斯噪声
     goal_uv_bias_std: 0.0        # 目标 uv 每局固定偏置
 
 # 强化学习环境参数
 rl:
   env_name: math_env         # RL 环境名称
-  max_episode_steps: 800      # 单局最大步数
-  goal_tolerance_uv: 0.003    # 到达目标的阈值
-  action_scale_u: 0.05       # u 方向动作步长
-  action_scale_v: 0.05       # v 方向动作步长
-  progress_reward_weight: 3.0 # 朝目标前进奖励权重
+  max_episode_steps: 200      # 单局最大步数
+  goal_tolerance_uv: 0.02    # 到达目标的阈值
+  action_scale_u: 1.0       # u 方向动作步长
+  action_scale_v: 1.0       # v 方向动作步长
+  progress_reward_weight: 2.0 # 朝目标前进奖励权重
   success_reward: 80.0        # 到达终点奖励
-  step_penalty: 0.001         # 每步基础惩罚
-  action_l2_weight: 0.0001    # 动作幅度惩罚
-  action_smoothness_weight: 0.001 # 动作变化惩罚
-  boundary_penalty: 0.05      # 边界裁剪惩罚
+  step_penalty: 0.00         # 每步基础惩罚
+  action_l2_weight: 0.000    # 动作幅度惩罚
+  action_smoothness_weight: 0.00 # 动作变化惩罚
+  boundary_penalty: 0.0      # 边界裁剪惩罚
 
 # 模型参数
 model:
   hidden_sizes: [256, 256] # MLP 隐藏层大小
   activation: tanh         # MLP 激活函数
-  init_log_std: -0.5       # 初始动作方差对数
+  init_log_std: -2.0       # 初始动作方差对数
 
 # 算法公共参数
 algorithm:
@@ -49,16 +49,17 @@ algorithm:
 
 # PPO 专有参数
 ppo:
-  total_updates: 200         # 总更新次数
-  lr: 1.0e-4                 # 学习率
+  total_updates: 600         # 总更新次数
+  lr: 1.0e-5                 # 学习率
   gae_lambda: 0.95           # GAE 参数
-  clip_ratio: 0.2            # PPO 截断系数
-  value_coef: 0.5            # 值函数损失权重
+  clip_ratio: 0.15            # PPO 截断系数
+  value_coef: 5e-1            # 值函数损失权重
+  normalize_value_targets: true # 是否归一化 value 目标
   entropy_coef: 0.000        # 熵奖励权重
   max_grad_norm: 0.5         # 梯度裁剪上限
   rollout_steps: 2048        # 每次更新采样步数
-  update_epochs: 50          # 每次更新轮数
-  minibatch_size: 256        # 小批量大小
+  update_epochs: 5          # 每次更新轮数
+  minibatch_size: 512        # 小批量大小
   normalize_advantages: true # 是否归一化优势
 
 # SAC 预留参数
@@ -86,10 +87,12 @@ train:
   log_interval: 1            # 终端打印间隔
   save_interval: 10          # 权重保存间隔
   runs_root: outputs/runs    # 训练输出根目录
+  resume: false               # 是否恢复训练进度
+  checkpoint: "./outputs/runs/ppo_math_env_20260409_085302/final.pt" # 初始化或续训权重路径
 
 # 评估参数
 eval:
-  checkpoint: "./outputs/runs/sac_math_env_20260406_191355/best.pt"      # 默认权重路径
+  checkpoint: "./outputs/runs/sac_math_env_20260406_191355/final.pt"      # 默认权重路径
   episodes: 5         # 评估回合数
   seed: 123           # 评估随机种子
   headless: false     # 是否关闭可视化

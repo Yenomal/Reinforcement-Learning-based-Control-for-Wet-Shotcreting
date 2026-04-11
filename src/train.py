@@ -64,6 +64,7 @@ def save_checkpoint(
     config: Dict[str, Any],
     progress: int,
     metrics: Dict[str, Any],
+    extra_state: Dict[str, Any] | None = None,
 ) -> None:
     payload = {
         "progress": progress,
@@ -71,7 +72,46 @@ def save_checkpoint(
         "metrics": metrics,
         "state_dict": agent.state_dict(),
     }
+    if extra_state is not None:
+        payload["extra_state"] = extra_state
     torch.save(payload, run_dir / filename)
+
+
+def load_metrics_csv(run_dir: Path) -> List[Dict[str, Any]]:
+    """Load existing metrics history from a run directory if it exists."""
+    metrics_path = run_dir / "metrics.csv"
+    if not metrics_path.exists():
+        return []
+
+    history: List[Dict[str, Any]] = []
+    with metrics_path.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            parsed_row: Dict[str, Any] = {}
+            for key, value in row.items():
+                if value is None or value == "":
+                    parsed_row[key] = value
+                    continue
+                try:
+                    parsed_row[key] = float(value)
+                except ValueError:
+                    parsed_row[key] = value
+            history.append(parsed_row)
+    return history
+
+
+def resolve_resume_checkpoint(config: Dict[str, Any]) -> Path | None:
+    """Return the configured checkpoint path when one is provided."""
+    train_cfg = config.get("train", {})
+    checkpoint = str(train_cfg.get("checkpoint", "")).strip()
+
+    if not checkpoint:
+        return None
+
+    checkpoint_path = Path(checkpoint)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
 
 
 def write_metrics_csv(run_dir: Path, history: List[Dict[str, Any]]) -> None:
@@ -274,6 +314,8 @@ def run_ppo_training(
     config: Dict[str, Any],
     run_dir: Path,
     device: torch.device,
+    start_progress: int = 0,
+    metrics_history: List[Dict[str, Any]] | None = None,
 ) -> None:
     """Train PPO using an on-policy rollout buffer."""
     train_cfg = config.get("train", {})
@@ -291,7 +333,15 @@ def run_ppo_training(
 
     observation, _ = env.reset(seed=int(train_cfg.get("seed", 42)))
     best_mean_reward = float("-inf")
-    metrics_history: List[Dict[str, Any]] = []
+    metrics_history = list(metrics_history or [])
+    if metrics_history:
+        historical_rewards = [
+            float(row["mean_reward"])
+            for row in metrics_history
+            if row.get("mean_reward") not in (None, "")
+        ]
+        if historical_rewards:
+            best_mean_reward = max(historical_rewards)
 
     print("=" * 72)
     print("PPO Training On MathEnv")
@@ -301,9 +351,10 @@ def run_ppo_training(
     print(f"Observation dim: {env.observation_dim}")
     print(f"Action dim: {env.action_dim}")
     print(f"Total updates: {total_updates}")
+    print(f"Resume from update: {start_progress}")
     print(f"Rollout steps: {rollout_steps}")
 
-    for update in range(1, total_updates + 1):
+    for update in range(start_progress + 1, total_updates + 1):
         batch, observation, episode_summaries = collect_on_policy_rollout(
             env=env,
             agent=agent,
@@ -339,6 +390,9 @@ def run_sac_training(
     config: Dict[str, Any],
     run_dir: Path,
     device: torch.device,
+    start_progress: int = 0,
+    metrics_history: List[Dict[str, Any]] | None = None,
+    replay_buffer: ReplayBuffer | None = None,
 ) -> None:
     """Train SAC using a replay buffer."""
     train_cfg = config.get("train", {})
@@ -357,19 +411,27 @@ def run_sac_training(
     if total_steps <= 0:
         raise ValueError("sac.total_steps must be a positive integer.")
 
-    replay_buffer = ReplayBuffer(
+    replay_buffer = replay_buffer or ReplayBuffer(
         capacity=buffer_size,
         observation_dim=env.observation_dim,
         action_dim=env.action_dim,
     )
     observation, _ = env.reset(seed=int(train_cfg.get("seed", 42)))
     recent_episodes: List[Dict[str, Any]] = []
-    metrics_history: List[Dict[str, Any]] = []
+    metrics_history = list(metrics_history or [])
     best_mean_reward = float("-inf")
     latest_metrics: Dict[str, Any] = {
         "policy_loss": float("nan"),
         "value_loss": float("nan"),
     }
+    if metrics_history:
+        historical_rewards = [
+            float(row["mean_reward"])
+            for row in metrics_history
+            if row.get("mean_reward") not in (None, "")
+        ]
+        if historical_rewards:
+            best_mean_reward = max(historical_rewards)
 
     print("=" * 72)
     print("SAC Training On MathEnv")
@@ -379,9 +441,10 @@ def run_sac_training(
     print(f"Observation dim: {env.observation_dim}")
     print(f"Action dim: {env.action_dim}")
     print(f"Total steps: {total_steps}")
+    print(f"Resume from step: {start_progress}")
     print(f"Replay buffer size: {buffer_size}")
 
-    for step in range(1, total_steps + 1):
+    for step in range(start_progress + 1, total_steps + 1):
         if step < learning_starts:
             action = np.random.uniform(-1.0, 1.0, size=env.action_dim).astype(np.float32)
         else:
@@ -425,17 +488,41 @@ def run_sac_training(
 
             if not np.isnan(metrics["mean_reward"]) and metrics["mean_reward"] > best_mean_reward:
                 best_mean_reward = metrics["mean_reward"]
-                save_checkpoint(run_dir, "best.pt", agent, config, step, metrics)
+                save_checkpoint(
+                    run_dir,
+                    "best.pt",
+                    agent,
+                    config,
+                    step,
+                    metrics,
+                    extra_state={"replay_buffer": replay_buffer.state_dict()},
+                )
 
             if save_interval_steps > 0 and step % save_interval_steps == 0:
-                save_checkpoint(run_dir, "latest.pt", agent, config, step, metrics)
+                save_checkpoint(
+                    run_dir,
+                    "latest.pt",
+                    agent,
+                    config,
+                    step,
+                    metrics,
+                    extra_state={"replay_buffer": replay_buffer.state_dict()},
+                )
 
             recent_episodes = []
 
     write_metrics_csv(run_dir, metrics_history)
     save_training_curves(run_dir, metrics_history)
     final_metrics = metrics_history[-1] if metrics_history else latest_metrics
-    save_checkpoint(run_dir, "final.pt", agent, config, total_steps, final_metrics)
+    save_checkpoint(
+        run_dir,
+        "final.pt",
+        agent,
+        config,
+        total_steps,
+        final_metrics,
+        extra_state={"replay_buffer": replay_buffer.state_dict()},
+    )
     print(f"\nTraining complete. Final artifacts saved to: {run_dir}")
     print(f"Metrics CSV: {run_dir / 'metrics.csv'}")
     print(f"Curves HTML: {run_dir / 'training_curves.html'}")
@@ -453,6 +540,11 @@ def main() -> None:
     algorithm_cfg = config.get("algorithm", {})
     model_cfg = config.get("model", {})
     algorithm_name = str(algorithm_cfg.get("name", "ppo")).lower()
+    resume_checkpoint = resolve_resume_checkpoint(config)
+    resume_training = bool(train_cfg.get("resume", False))
+    resume_payload: Dict[str, Any] | None = None
+    start_progress = 0
+    metrics_history: List[Dict[str, Any]] = []
 
     seed = int(train_cfg.get("seed", 42))
     np.random.seed(seed)
@@ -466,8 +558,23 @@ def main() -> None:
         disturbance_cfg=disturbance_cfg,
     )
     run_dir = build_run_dir(config)
+    if resume_checkpoint is not None:
+        resume_payload = torch.load(resume_checkpoint, map_location=device)
+        if resume_training:
+            start_progress = int(resume_payload.get("progress", 0))
+            metrics_history = load_metrics_csv(resume_checkpoint.parent)
+
     with (run_dir / "config.yaml").open("w", encoding="utf-8") as file:
         yaml.safe_dump(config, file, sort_keys=False, allow_unicode=True)
+
+    if resume_checkpoint is not None:
+        if resume_training:
+            print(f"Resume training from checkpoint: {resume_checkpoint}")
+            print(f"Resume progress: {start_progress}")
+        else:
+            print(f"Initialize from pretrained checkpoint: {resume_checkpoint}")
+            print("Training progress will restart from 0.")
+    print(f"Saving outputs to: {run_dir}")
 
     if algorithm_name == "ppo":
         ppo_cfg = dict(config.get("ppo", {}))
@@ -479,7 +586,19 @@ def main() -> None:
             algorithm_cfg=ppo_cfg,
             device=device,
         )
-        run_ppo_training(env=env, agent=agent, config=config, run_dir=run_dir, device=device)
+        if resume_payload is not None and resume_training:
+            agent.load_training_state(resume_payload["state_dict"])
+        elif resume_payload is not None:
+            agent.load_policy_state(resume_payload["state_dict"])
+        run_ppo_training(
+            env=env,
+            agent=agent,
+            config=config,
+            run_dir=run_dir,
+            device=device,
+            start_progress=start_progress,
+            metrics_history=metrics_history,
+        )
     elif algorithm_name == "sac":
         sac_cfg = dict(config.get("sac", {}))
         sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
@@ -490,7 +609,28 @@ def main() -> None:
             algorithm_cfg=sac_cfg,
             device=device,
         )
-        run_sac_training(env=env, agent=agent, config=config, run_dir=run_dir, device=device)
+        replay_buffer = ReplayBuffer(
+            capacity=int(sac_cfg.get("buffer_size", 100000)),
+            observation_dim=env.observation_dim,
+            action_dim=env.action_dim,
+        )
+        if resume_payload is not None and resume_training:
+            agent.load_training_state(resume_payload["state_dict"])
+            extra_state = resume_payload.get("extra_state", {})
+            if "replay_buffer" in extra_state:
+                replay_buffer.load_state_dict(extra_state["replay_buffer"])
+        elif resume_payload is not None:
+            agent.load_policy_state(resume_payload["state_dict"])
+        run_sac_training(
+            env=env,
+            agent=agent,
+            config=config,
+            run_dir=run_dir,
+            device=device,
+            start_progress=start_progress,
+            metrics_history=metrics_history,
+            replay_buffer=replay_buffer,
+        )
     else:
         raise ValueError(f"Unsupported algorithm: {algorithm_name}")
 

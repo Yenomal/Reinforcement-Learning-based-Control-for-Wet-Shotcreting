@@ -14,6 +14,70 @@ from ..component.buffer import OnPolicyBatch
 from ..model.mlp import MLP
 
 
+class RunningValueNormalizer:
+    """Running mean/std normalizer for value targets."""
+
+    def __init__(self, eps: float = 1.0e-4) -> None:
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = eps
+        self.eps = eps
+
+    def update(self, values: torch.Tensor) -> None:
+        values = values.detach().flatten()
+        if values.numel() == 0:
+            return
+
+        batch_mean = float(values.mean().cpu().item())
+        batch_var = float(values.var(unbiased=False).cpu().item())
+        batch_count = float(values.numel())
+        self._update_from_moments(batch_mean, batch_var, batch_count)
+
+    def _update_from_moments(
+        self, batch_mean: float, batch_var: float, batch_count: float
+    ) -> None:
+        delta = batch_mean - self.mean
+        total_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / total_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + delta * delta * self.count * batch_count / total_count
+        new_var = m2 / total_count
+
+        self.mean = new_mean
+        self.var = max(new_var, self.eps)
+        self.count = total_count
+
+    def normalize(self, values: torch.Tensor) -> torch.Tensor:
+        scale = torch.sqrt(
+            torch.tensor(self.var + self.eps, dtype=values.dtype, device=values.device)
+        )
+        mean = torch.tensor(self.mean, dtype=values.dtype, device=values.device)
+        return (values - mean) / scale
+
+    def denormalize(self, values: torch.Tensor) -> torch.Tensor:
+        scale = torch.sqrt(
+            torch.tensor(self.var + self.eps, dtype=values.dtype, device=values.device)
+        )
+        mean = torch.tensor(self.mean, dtype=values.dtype, device=values.device)
+        return values * scale + mean
+
+    def state_dict(self) -> Dict[str, float]:
+        return {
+            "mean": self.mean,
+            "var": self.var,
+            "count": self.count,
+            "eps": self.eps,
+        }
+
+    def load_state_dict(self, state_dict: Dict[str, float]) -> None:
+        self.mean = float(state_dict.get("mean", 0.0))
+        self.var = float(state_dict.get("var", 1.0))
+        self.count = float(state_dict.get("count", self.eps))
+        self.eps = float(state_dict.get("eps", self.eps))
+
+
 class PPOAgent:
     """PPO agent with separate actor and critic MLPs."""
 
@@ -66,18 +130,27 @@ class PPOAgent:
         self.normalize_advantages = bool(
             algorithm_cfg.get("normalize_advantages", True)
         )
+        self.normalize_value_targets = bool(
+            algorithm_cfg.get("normalize_value_targets", True)
+        )
+        self.value_normalizer = RunningValueNormalizer()
 
     def _distribution(self, observations: torch.Tensor) -> Normal:
         mean = self.actor(observations)
         std = torch.exp(self.log_std).expand_as(mean)
         return Normal(mean, std)
 
+    def _critic_normalized(self, observation: torch.Tensor) -> torch.Tensor:
+        return self.critic(observation).squeeze(-1)
+
     def act(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             distribution = self._distribution(observation)
             action = distribution.sample()
             log_prob = distribution.log_prob(action).sum(dim=-1)
-            value = self.critic(observation).squeeze(-1)
+            value = self._critic_normalized(observation)
+            if self.normalize_value_targets:
+                value = self.value_normalizer.denormalize(value)
         return action, log_prob, value
 
     def act_deterministic(self, observation: torch.Tensor) -> torch.Tensor:
@@ -87,16 +160,22 @@ class PPOAgent:
 
     def value(self, observation: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            return self.critic(observation).squeeze(-1)
+            value = self._critic_normalized(observation)
+            if self.normalize_value_targets:
+                value = self.value_normalizer.denormalize(value)
+            return value
 
     def evaluate_actions(
         self, observations: torch.Tensor, actions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         distribution = self._distribution(observations)
         log_prob = distribution.log_prob(actions).sum(dim=-1)
         entropy = distribution.entropy().sum(dim=-1)
-        value = self.critic(observations).squeeze(-1)
-        return log_prob, entropy, value
+        normalized_value = self._critic_normalized(observations)
+        value = normalized_value
+        if self.normalize_value_targets:
+            value = self.value_normalizer.denormalize(normalized_value)
+        return log_prob, entropy, value, normalized_value
 
     def compute_returns_and_advantages(
         self, batch: OnPolicyBatch
@@ -136,6 +215,11 @@ class PPOAgent:
         if self.normalize_advantages:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        normalized_returns = returns
+        if self.normalize_value_targets:
+            self.value_normalizer.update(returns)
+            normalized_returns = self.value_normalizer.normalize(returns)
+
         batch_size = observations.shape[0]
         indices = torch.arange(batch_size, device=self.device)
 
@@ -155,8 +239,11 @@ class PPOAgent:
                 mb_old_log_probs = old_log_probs[minibatch_indices]
                 mb_advantages = advantages[minibatch_indices]
                 mb_returns = returns[minibatch_indices]
+                mb_normalized_returns = normalized_returns[minibatch_indices]
 
-                new_log_probs, entropy, values = self.evaluate_actions(mb_obs, mb_actions)
+                new_log_probs, entropy, values, normalized_values = self.evaluate_actions(
+                    mb_obs, mb_actions
+                )
                 log_ratio = new_log_probs - mb_old_log_probs
                 ratio = torch.exp(log_ratio)
 
@@ -167,7 +254,12 @@ class PPOAgent:
                     1.0 + self.clip_ratio,
                 ) * mb_advantages
                 policy_loss = -torch.min(unclipped, clipped).mean()
-                value_loss = 0.5 * torch.mean((values - mb_returns) ** 2)
+                if self.normalize_value_targets:
+                    value_loss = 0.5 * torch.mean(
+                        (normalized_values - mb_normalized_returns) ** 2
+                    )
+                else:
+                    value_loss = 0.5 * torch.mean((values - mb_returns) ** 2)
                 entropy_bonus = entropy.mean()
 
                 loss = (
@@ -197,6 +289,7 @@ class PPOAgent:
             "entropy": last_entropy,
             "approx_kl": last_kl,
             "returns_mean": float(returns.mean().item()),
+            "normalized_returns_mean": float(normalized_returns.mean().item()),
             "advantages_mean": float(advantages.mean().item()),
         }
 
@@ -206,6 +299,7 @@ class PPOAgent:
             "critic": self.critic.state_dict(),
             "log_std": self.log_std.detach().cpu(),
             "optimizer": self.optimizer.state_dict(),
+            "value_normalizer": self.value_normalizer.state_dict(),
         }
 
     def load_policy_state(self, state_dict: Dict[str, Any]) -> None:
@@ -214,6 +308,16 @@ class PPOAgent:
         self.critic.load_state_dict(state_dict["critic"])
         with torch.no_grad():
             self.log_std.copy_(state_dict["log_std"].to(self.device))
+        if "value_normalizer" in state_dict:
+            self.value_normalizer.load_state_dict(state_dict["value_normalizer"])
 
         self.actor.eval()
         self.critic.eval()
+
+    def load_training_state(self, state_dict: Dict[str, Any]) -> None:
+        """Load full PPO training state, including optimizer."""
+        self.load_policy_state(state_dict)
+        if "optimizer" in state_dict:
+            self.optimizer.load_state_dict(state_dict["optimizer"])
+        self.actor.train()
+        self.critic.train()

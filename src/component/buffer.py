@@ -209,3 +209,30 @@ class ReplayBuffer(Buffer):
 
     def __len__(self) -> int:
         return self.size
+
+    def state_dict(self) -> dict[str, object]:
+        """Serialize replay-buffer state for checkpointing."""
+        return {
+            "capacity": self.capacity,
+            "observation_dim": self.observation_dim,
+            "action_dim": self.action_dim,
+            "position": self.position,
+            "size": self.size,
+            "observations": self.observations.copy(),
+            "actions": self.actions.copy(),
+            "rewards": self.rewards.copy(),
+            "next_observations": self.next_observations.copy(),
+            "dones": self.dones.copy(),
+        }
+
+    def load_state_dict(self, state_dict: dict[str, object]) -> None:
+        """Restore replay-buffer state from checkpoint data."""
+        self.position = int(state_dict["position"])
+        self.size = int(state_dict["size"])
+        self.observations[:] = np.asarray(state_dict["observations"], dtype=np.float32)
+        self.actions[:] = np.asarray(state_dict["actions"], dtype=np.float32)
+        self.rewards[:] = np.asarray(state_dict["rewards"], dtype=np.float32)
+        self.next_observations[:] = np.asarray(
+            state_dict["next_observations"], dtype=np.float32
+        )
+        self.dones[:] = np.asarray(state_dict["dones"], dtype=np.float32)

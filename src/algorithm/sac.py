@@ -245,3 +245,18 @@ class SACAgent:
         self.critic_2.eval()
         self.target_critic_1.eval()
         self.target_critic_2.eval()
+
+    def load_training_state(self, state_dict: Dict[str, Any]) -> None:
+        """Load full SAC training state, including optimizers."""
+        self.load_policy_state(state_dict)
+        if "actor_optimizer" in state_dict:
+            self.actor_optimizer.load_state_dict(state_dict["actor_optimizer"])
+        if "critic_1_optimizer" in state_dict:
+            self.critic_1_optimizer.load_state_dict(state_dict["critic_1_optimizer"])
+        if "critic_2_optimizer" in state_dict:
+            self.critic_2_optimizer.load_state_dict(state_dict["critic_2_optimizer"])
+        if "alpha_optimizer" in state_dict:
+            self.alpha_optimizer.load_state_dict(state_dict["alpha_optimizer"])
+        self.actor.train()
+        self.critic_1.train()
+        self.critic_2.train()
