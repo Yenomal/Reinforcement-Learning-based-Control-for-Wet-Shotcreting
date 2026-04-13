@@ -1,0 +1,69 @@
+robot_name: shipen_4dof
+
+joint_order:
+  - turret_yaw
+  - shoulder_pitch
+  - elbow_pitch
+  - wrist_pitch
+
+frames:
+  standard: pybullet
+  tunnel_axis_world: [1.0, 0.0, 0.0]
+
+default_scene:
+  robot_position_world: [0.0, 0.0, 0.45]
+  robot_yaw_deg: 90.0
+
+zero_configuration_deg:
+  turret_yaw: 0.0
+  shoulder_pitch: 0.0
+  elbow_pitch: 0.0
+  wrist_pitch: 0.0
+
+joint_limits_deg:
+  turret_yaw: [-90.0, 90.0]
+  shoulder_pitch: [-20.0, 60.0]
+  elbow_pitch: [-100.0, 100.0]
+  wrist_pitch: [-110.0, 70.0]
+
+joint_axes_local:
+  turret_yaw: [0.0, 0.0, 1.0]
+  shoulder_pitch: [-1.0, 0.0, 0.0]
+  elbow_pitch: [-1.0, 0.0, 0.0]
+  wrist_pitch: [-1.0, 0.0, 0.0]
+
+joint_axes_world_zero:
+  turret_yaw: [0.0, 0.0, 1.0]
+  shoulder_pitch: [0.0, -1.0, 0.0]
+  elbow_pitch: [0.0, -1.0, 0.0]
+  wrist_pitch: [0.0, -1.0, 0.0]
+
+link_vectors_local:
+  yaw_to_shoulder: [0.0, -0.119299, 0.082713]
+  shoulder_to_elbow: [0.0, -0.909985, 0.625785]
+  elbow_to_wrist: [0.0, -0.726177, -0.420024]
+  wrist_to_tool_tip: [0.004246, -0.753634, 0.518129]
+
+link_lengths_m:
+  yaw_to_shoulder_offset: 0.145168
+  shoulder_to_elbow: 1.104391
+  elbow_to_wrist: 0.838900
+  wrist_to_tool_tip: 0.914571
+
+joint_positions_local_zero:
+  yaw: [0.0, 0.0, 0.0]
+  shoulder: [0.0, -0.119299, 0.082713]
+  elbow: [0.0, -1.029284, 0.708498]
+  wrist: [0.0, -1.755461, 0.288474]
+  tool_tip: [0.004246, -2.509095, 0.806603]
+
+joint_positions_world_zero:
+  yaw: [0.0, 0.0, 0.45]
+  shoulder: [0.119299, 0.0, 0.532713]
+  elbow: [1.029284, 0.0, 1.158498]
+  wrist: [1.755461, 0.0, 0.738474]
+  tool_tip: [2.509095, 0.004246, 1.256603]
+
+workspace_estimation:
+  num_samples: 4096
+  seed: 0

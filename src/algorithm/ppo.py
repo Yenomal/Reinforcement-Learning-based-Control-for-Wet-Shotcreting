@@ -14,6 +14,9 @@ from ..component.buffer import OnPolicyBatch
 from ..model.mlp import MLP
 
 
+SQUASH_EPS = 1.0e-6
+
+
 class RunningValueNormalizer:
     """Running mean/std normalizer for value targets."""
 
@@ -140,23 +143,45 @@ class PPOAgent:
         std = torch.exp(self.log_std).expand_as(mean)
         return Normal(mean, std)
 
+    @staticmethod
+    def _squash_action(pre_tanh_action: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(pre_tanh_action)
+
+    @staticmethod
+    def _unsquash_action(action: torch.Tensor) -> torch.Tensor:
+        clipped_action = torch.clamp(action, -1.0 + SQUASH_EPS, 1.0 - SQUASH_EPS)
+        return 0.5 * (
+            torch.log1p(clipped_action) - torch.log1p(-clipped_action)
+        )
+
+    @staticmethod
+    def _squashed_log_prob(
+        distribution: Normal,
+        pre_tanh_action: torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        log_prob = distribution.log_prob(pre_tanh_action).sum(dim=-1)
+        correction = torch.log(1.0 - action.pow(2) + SQUASH_EPS).sum(dim=-1)
+        return log_prob - correction
+
     def _critic_normalized(self, observation: torch.Tensor) -> torch.Tensor:
         return self.critic(observation).squeeze(-1)
 
     def act(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             distribution = self._distribution(observation)
-            action = distribution.sample()
-            log_prob = distribution.log_prob(action).sum(dim=-1)
+            pre_tanh_action = distribution.sample()
+            action = self._squash_action(pre_tanh_action)
+            log_prob = self._squashed_log_prob(distribution, pre_tanh_action, action)
             value = self._critic_normalized(observation)
             if self.normalize_value_targets:
                 value = self.value_normalizer.denormalize(value)
         return action, log_prob, value
 
     def act_deterministic(self, observation: torch.Tensor) -> torch.Tensor:
-        """Return the deterministic action mean for evaluation."""
+        """Return the deterministic bounded action mean for evaluation."""
         with torch.no_grad():
-            return self.actor(observation)
+            return self._squash_action(self.actor(observation))
 
     def value(self, observation: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
@@ -169,7 +194,15 @@ class PPOAgent:
         self, observations: torch.Tensor, actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         distribution = self._distribution(observations)
-        log_prob = distribution.log_prob(actions).sum(dim=-1)
+        clipped_actions = torch.clamp(actions, -1.0 + SQUASH_EPS, 1.0 - SQUASH_EPS)
+        pre_tanh_action = self._unsquash_action(clipped_actions)
+        log_prob = self._squashed_log_prob(
+            distribution,
+            pre_tanh_action,
+            clipped_actions,
+        )
+        # The exact tanh-squashed entropy has no simple closed form here;
+        # we keep the base Normal entropy as a stable proxy.
         entropy = distribution.entropy().sum(dim=-1)
         normalized_value = self._critic_normalized(observations)
         value = normalized_value

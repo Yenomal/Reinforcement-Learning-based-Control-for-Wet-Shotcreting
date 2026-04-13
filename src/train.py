@@ -536,6 +536,7 @@ def main() -> None:
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    robot_cfg = config.get("robot", {})
     disturbance_cfg = config.get("disturbance", {})
     algorithm_cfg = config.get("algorithm", {})
     model_cfg = config.get("model", {})
@@ -555,6 +556,7 @@ def main() -> None:
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        robot_cfg=robot_cfg,
         algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )

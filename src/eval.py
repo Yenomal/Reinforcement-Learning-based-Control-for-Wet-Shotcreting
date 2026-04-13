@@ -164,8 +164,6 @@ class EvalRenderer:
         self,
         episode_index: int,
         total_episodes: int,
-        start_surface: np.ndarray,
-        goal_surface: np.ndarray,
         start_point: np.ndarray,
         goal_point: np.ndarray,
     ) -> None:
@@ -179,8 +177,10 @@ class EvalRenderer:
             self.goal_artist.remove()
         if self.start_link is not None:
             self.start_link.remove()
+            self.start_link = None
         if self.goal_link is not None:
             self.goal_link.remove()
+            self.goal_link = None
 
         self.start_artist = self.ax.scatter(
             [start_point[0]],
@@ -205,24 +205,6 @@ class EvalRenderer:
             depthshade=False,
         )
 
-        (self.start_link,) = self.ax.plot(
-            [start_surface[0], start_point[0]],
-            [start_surface[1], start_point[1]],
-            [start_surface[2], start_point[2]],
-            color="limegreen",
-            linestyle="--",
-            linewidth=1.5,
-            alpha=0.9,
-        )
-        (self.goal_link,) = self.ax.plot(
-            [goal_surface[0], goal_point[0]],
-            [goal_surface[1], goal_point[1]],
-            [goal_surface[2], goal_point[2]],
-            color="goldenrod",
-            linestyle="--",
-            linewidth=1.5,
-            alpha=0.9,
-        )
         self.status_text.set_text(
             f"Episode {episode_index}/{total_episodes}\nWaiting for rollout..."
         )
@@ -323,12 +305,14 @@ def build_agent_from_checkpoint(
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    robot_cfg = config.get("robot", {})
     algorithm_cfg = config.get("algorithm", {})
     disturbance_cfg = config.get("disturbance", {})
     env = MathEnv(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        robot_cfg=robot_cfg,
         algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )
@@ -389,6 +373,7 @@ def main() -> None:
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    robot_cfg = config.get("robot", {})
     algorithm_cfg = config.get("algorithm", {})
     disturbance_cfg = config.get("disturbance", {})
 
@@ -396,6 +381,7 @@ def main() -> None:
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        robot_cfg=robot_cfg,
         algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )
@@ -440,10 +426,8 @@ def main() -> None:
             renderer.reset_episode(
                 episode_index=episode_index,
                 total_episodes=total_episodes,
-                start_surface=env.current_task["start"]["surface_point"],
-                goal_surface=env.current_task["goal"]["surface_point"],
-                start_point=env.current_task["start"]["retreated_point"],
-                goal_point=env.current_task["goal"]["retreated_point"],
+                start_point=env.current_task["start"]["point"],
+                goal_point=env.current_task["goal"]["point"],
             )
 
         while not done:
