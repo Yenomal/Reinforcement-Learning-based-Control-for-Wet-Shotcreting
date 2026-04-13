@@ -14,8 +14,10 @@
 
 - [x] 修复原始的math env包括reward设计（当前的计算方法是delta distance这种会导致最终点附近抖动），3D点Observation（当前是在岩壁展开的2D空间做目标跟随）
 
-- [] 使用关节角动作空间（当前是直接末端点进入math_env，我需要设计关节角，关节参数需要参考[rock_3D](./src/rock_3D)里面的相关mesh）
+- [x] 使用关节角动作空间（当前是直接末端点进入math_env，我需要设计关节角，关节参数需要参考[rock_3D](./src/rock_3D)里面的相关mesh）
 
 - [] 接入pybullet（我希望是这样一个空间，我输入一连串关节角，然后等我按下按键，他直接运行，也就是他是一个独立环境，不传递Observation出来）
+
+- [] 整理项目——删除不需要的+assets抬出+固定eval环境
 
 - 后续如果有机会可以尝试pybullet里面拿Observation
