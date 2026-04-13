@@ -16,19 +16,19 @@ planner:
 # 扰动参数
 disturbance:
   sensor_noise:
-    enable: false                # 是否开启传感器噪声
-    current_uv_step_std: 0.01     # 当前 uv 每步高斯噪声
-    current_uv_bias_std: 0.02     # 当前 uv 每局固定偏置
-    goal_uv_step_std: 0.0        # 目标 uv 每步高斯噪声
-    goal_uv_bias_std: 0.0        # 目标 uv 每局固定偏置
+    enable: false                 # 是否开启传感器噪声
+    current_point_step_std: 0.01 # 当前 3D 点每步高斯噪声
+    current_point_bias_std: 0.02 # 当前 3D 点每局固定偏置
+    goal_point_step_std: 0.0     # 目标 3D 点每步高斯噪声
+    goal_point_bias_std: 0.0     # 目标 3D 点每局固定偏置
 
 # 强化学习环境参数
 rl:
   env_name: math_env         # RL 环境名称
   max_episode_steps: 200      # 单局最大步数
-  goal_tolerance_uv: 0.02    # 到达目标的阈值
-  action_scale_u: 1.0       # u 方向动作步长
-  action_scale_v: 1.0       # v 方向动作步长
+  goal_tolerance: 0.10       # 3D 欧氏距离下的到达阈值
+  action_scale: 0.20         # 每步 3D 动作步长，可写成标量或 [x, y, z]
+  workspace_margin: 1.25     # 相对岩壁点云包围盒的额外工作空间边界
   progress_reward_weight: 2.0 # 朝目标前进奖励权重
   success_reward: 80.0        # 到达终点奖励
   step_penalty: 0.00         # 每步基础惩罚
@@ -49,7 +49,7 @@ algorithm:
 
 # PPO 专有参数
 ppo:
-  total_updates: 600         # 总更新次数
+  total_updates: 10         # 总更新次数
   lr: 1.0e-5                 # 学习率
   gae_lambda: 0.95           # GAE 参数
   clip_ratio: 0.15            # PPO 截断系数
@@ -88,11 +88,11 @@ train:
   save_interval: 10          # 权重保存间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度
-  checkpoint: "./outputs/runs/ppo_math_env_20260409_085302/final.pt" # 初始化或续训权重路径
+  checkpoint: "" # 初始化或续训权重路径
 
 # 评估参数
 eval:
-  checkpoint: "./outputs/runs/sac_math_env_20260406_191355/final.pt"      # 默认权重路径
+  checkpoint: "./outputs/runs/ppo_math_env_20260413_110213/final.pt"      # 默认权重路径
   episodes: 5         # 评估回合数
   seed: 123           # 评估随机种子
   headless: false     # 是否关闭可视化

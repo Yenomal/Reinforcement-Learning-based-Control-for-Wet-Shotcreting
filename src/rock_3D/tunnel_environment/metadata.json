@@ -1,0 +1,75 @@
+{
+  "source_html": "rock_environment.html",
+  "plotly_shape": [
+    100,
+    200
+  ],
+  "plotly_bbox": {
+    "x": [
+      -3.5167516600268707,
+      3.6477115115638803
+    ],
+    "y": [
+      0.0,
+      3.600340377784118
+    ],
+    "z": [
+      0.0,
+      2.0
+    ]
+  },
+  "pybullet_axis_mapping": {
+    "x": "plotly_z",
+    "y": "plotly_x",
+    "z": "plotly_y"
+  },
+  "design": {
+    "outer_width": 10.0,
+    "outer_height": 5.0,
+    "excavated_length": 3.0,
+    "total_length": 5.0,
+    "solid_length": 2.0
+  },
+  "wall_mesh": {
+    "vertex_count": 20000,
+    "face_count": 78804,
+    "bbox_min": [
+      0.0,
+      -3.5167516600268707,
+      0.0
+    ],
+    "bbox_max": [
+      3.0,
+      3.6477115115638803,
+      3.600340377784118
+    ]
+  },
+  "shell_mesh": {
+    "vertex_count": 1836,
+    "face_count": 1224,
+    "bbox_min": [
+      0.0,
+      -4.934520074231495,
+      0.0
+    ],
+    "bbox_max": [
+      5.0,
+      5.065479925768505,
+      5.0
+    ]
+  },
+  "mesh": {
+    "vertex_count": 21836,
+    "face_count": 80028,
+    "bbox_min": [
+      0.0,
+      -4.934520074231495,
+      0.0
+    ],
+    "bbox_max": [
+      5.0,
+      5.065479925768505,
+      5.0
+    ]
+  }
+}

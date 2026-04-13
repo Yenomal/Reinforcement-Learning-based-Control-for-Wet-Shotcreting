@@ -5,10 +5,12 @@ Task sampler utilities for the shotcrete planner stage.
 
 This module does not generate a full path. It only:
 - takes a 3D rock-wall point cloud
-- flattens the wall into the (u, v) space
-- randomly samples a valid start/goal pair
+- randomly samples a valid start/goal pair in 3D
 - estimates local normals from the point cloud
 - optionally offsets points along the normal for downstream RL usage
+
+The legacy uv-flatten helpers are kept for future analysis, but the main
+task-sampling path now works directly in 3D point space.
 """
 
 from __future__ import annotations
@@ -88,15 +90,12 @@ def estimate_surface_normal_from_point_cloud(
 
 
 def build_task_point_state(
-    flat_cloud: Dict[str, np.ndarray],
+    points: np.ndarray,
     index: int,
     retreat_distance: float = 1.0,
     k_neighbors: int = DEFAULT_NORMAL_NEIGHBORS,
 ) -> Dict[str, object]:
-    """Build one start/goal state from a sampled point-cloud index."""
-    points = flat_cloud["points"]
-    uv = flat_cloud["uv"]
-
+    """Build one start/goal state from a sampled 3D point-cloud index."""
     surface_point = points[index]
     normal = estimate_surface_normal_from_point_cloud(
         points,
@@ -107,7 +106,6 @@ def build_task_point_state(
 
     return {
         "index": int(index),
-        "uv": uv[index].copy(),
         "surface_point": surface_point.copy(),
         "normal": normal,
         "retreated_point": retreated_point,
@@ -115,43 +113,39 @@ def build_task_point_state(
 
 
 def _sample_valid_index_pair(
-    flat_cloud: Dict[str, np.ndarray],
+    points: np.ndarray,
     rng: np.random.Generator,
     margin_ratio: float = DEFAULT_MARGIN_RATIO,
-    min_uv_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
+    min_point_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
     max_trials: int = 256,
 ) -> Tuple[int, int, float]:
-    """Sample two point indices with enough distance in flattened space."""
-    uv = flat_cloud["uv"]
-    u = flat_cloud["u"]
-    v = flat_cloud["v"]
-    u_min, u_max = flat_cloud["u_bounds"]
-    v_min, v_max = flat_cloud["v_bounds"]
+    """Sample two point indices with enough distance in 3D space."""
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape [N, 3].")
 
-    margin_u = (u_max - u_min) * margin_ratio
-    margin_v = (v_max - v_min) * margin_ratio
+    bbox_min = points.min(axis=0)
+    bbox_max = points.max(axis=0)
+    margin = (bbox_max - bbox_min) * margin_ratio
+    lower = bbox_min + margin
+    upper = bbox_max - margin
 
-    valid_mask = (
-        (u >= u_min + margin_u)
-        & (u <= u_max - margin_u)
-        & (v >= v_min + margin_v)
-        & (v <= v_max - margin_v)
-    )
+    valid_mask = np.all(points >= lower, axis=1) & np.all(points <= upper, axis=1)
     valid_indices = np.flatnonzero(valid_mask)
     if len(valid_indices) < 2:
         raise ValueError("Not enough valid points after applying the sampling margin.")
 
-    span = np.array([u_max - u_min, v_max - v_min], dtype=float)
-    min_uv_distance = float(np.linalg.norm(span) * min_uv_distance_ratio)
+    span = bbox_max - bbox_min
+    min_point_distance = float(np.linalg.norm(span) * min_point_distance_ratio)
 
     for _ in range(max_trials):
         start_index = int(rng.choice(valid_indices))
         goal_index = int(rng.choice(valid_indices))
         if start_index == goal_index:
             continue
-        uv_distance = np.linalg.norm(uv[start_index] - uv[goal_index])
-        if uv_distance >= min_uv_distance:
-            return start_index, goal_index, min_uv_distance
+        point_distance = np.linalg.norm(points[start_index] - points[goal_index])
+        if point_distance >= min_point_distance:
+            return start_index, goal_index, min_point_distance
 
     raise ValueError("Failed to sample a valid start/goal pair from the point cloud.")
 
@@ -161,40 +155,40 @@ def sample_planner_task(
     seed: Optional[int] = None,
     retreat_distance: float = 1.0,
     margin_ratio: float = DEFAULT_MARGIN_RATIO,
-    min_uv_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
+    min_point_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
     k_neighbors: int = DEFAULT_NORMAL_NEIGHBORS,
     r_base: float = R_BASE,
 ) -> Dict[str, object]:
     """Sample one planner task from a 3D rock-wall point cloud."""
-    flat_cloud = flatten_rock_point_cloud(rock_points, r_base=r_base)
+    points = np.asarray(rock_points, dtype=float)
     rng = np.random.default_rng(seed)
 
-    start_index, goal_index, min_uv_distance = _sample_valid_index_pair(
-        flat_cloud,
+    start_index, goal_index, min_point_distance = _sample_valid_index_pair(
+        points,
         rng=rng,
         margin_ratio=margin_ratio,
-        min_uv_distance_ratio=min_uv_distance_ratio,
+        min_point_distance_ratio=min_point_distance_ratio,
     )
 
     start_state = build_task_point_state(
-        flat_cloud,
+        points,
         index=start_index,
         retreat_distance=retreat_distance,
         k_neighbors=k_neighbors,
     )
     goal_state = build_task_point_state(
-        flat_cloud,
+        points,
         index=goal_index,
         retreat_distance=retreat_distance,
         k_neighbors=k_neighbors,
     )
 
     return {
-        "flattened_cloud": flat_cloud,
+        "points": points,
         "start": start_state,
         "goal": goal_state,
         "retreat_distance": float(retreat_distance),
-        "min_uv_distance": float(min_uv_distance),
+        "min_point_distance": float(min_point_distance),
     }
 
 
@@ -203,7 +197,7 @@ def sample_planner_task_from_environment(
     seed: Optional[int] = None,
     retreat_distance: float = 1.0,
     margin_ratio: float = DEFAULT_MARGIN_RATIO,
-    min_uv_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
+    min_point_distance_ratio: float = DEFAULT_MIN_START_GOAL_RATIO,
     k_neighbors: int = DEFAULT_NORMAL_NEIGHBORS,
 ) -> Dict[str, object]:
     """Sample one planner task from a rock environment dictionary."""
@@ -215,7 +209,7 @@ def sample_planner_task_from_environment(
         seed=seed,
         retreat_distance=retreat_distance,
         margin_ratio=margin_ratio,
-        min_uv_distance_ratio=min_uv_distance_ratio,
+        min_point_distance_ratio=min_point_distance_ratio,
         k_neighbors=k_neighbors,
         r_base=float(rock_env.get("R_BASE", R_BASE)),
     )
@@ -239,7 +233,7 @@ def main() -> None:
         seed=int(planner_cfg.get("seed", 0)),
         retreat_distance=float(planner_cfg.get("retreat_distance", 1.0)),
         margin_ratio=float(planner_cfg.get("margin_ratio", DEFAULT_MARGIN_RATIO)),
-        min_uv_distance_ratio=float(
+        min_point_distance_ratio=float(
             planner_cfg.get("min_start_goal_ratio", DEFAULT_MIN_START_GOAL_RATIO)
         ),
         k_neighbors=int(planner_cfg.get("normal_neighbors", DEFAULT_NORMAL_NEIGHBORS)),
@@ -248,9 +242,9 @@ def main() -> None:
     print("Planner task sampler")
     print(f"Point count: {len(rock_env['points'])}")
     print(f"Retreat distance: {task['retreat_distance']:.2f} m")
-    print(f"Minimum uv distance: {task['min_uv_distance']:.2f}")
-    print(f"Start uv: {task['start']['uv']}")
-    print(f"Goal uv: {task['goal']['uv']}")
+    print(f"Minimum point distance: {task['min_point_distance']:.2f} m")
+    print(f"Start surface point: {task['start']['surface_point']}")
+    print(f"Goal surface point: {task['goal']['surface_point']}")
     print(f"Start retreated point: {task['start']['retreated_point']}")
     print(f"Goal retreated point: {task['goal']['retreated_point']}")
 

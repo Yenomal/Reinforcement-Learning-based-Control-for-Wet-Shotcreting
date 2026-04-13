@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<robot name="tunnel_environment">
+  <material name="rock_wall">
+    <color rgba="0.63 0.56 0.48 1.0"/>
+  </material>
+  <material name="tunnel_shell">
+    <color rgba="0.55 0.50 0.46 1.0"/>
+  </material>
+  <link name="tunnel_environment">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/tunnel_shell.obj"/>
+      </geometry>
+      <material name="tunnel_shell"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/tunnel_wall.obj"/>
+      </geometry>
+      <material name="rock_wall"/>
+    </visual>
+  </link>
+</robot>

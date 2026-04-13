@@ -107,16 +107,10 @@ class EvalRenderer:
             alpha=0.75,
         )
 
-        self.surface_line, = self.ax.plot(
-            [], [], [], color="dodgerblue", linewidth=2.5, label="surface_path"
+        self.point_line, = self.ax.plot(
+            [], [], [], color="crimson", linewidth=2.5, label="point_path"
         )
-        self.retreated_line, = self.ax.plot(
-            [], [], [], color="crimson", linewidth=2.5, label="retreated_path"
-        )
-        self.current_surface, = self.ax.plot(
-            [], [], [], marker="o", color="dodgerblue", markersize=6, linestyle=""
-        )
-        self.current_retreated, = self.ax.plot(
+        self.current_point_artist, = self.ax.plot(
             [], [], [], marker="o", color="crimson", markersize=6, linestyle=""
         )
 
@@ -172,14 +166,12 @@ class EvalRenderer:
         total_episodes: int,
         start_surface: np.ndarray,
         goal_surface: np.ndarray,
-        start_retreated: np.ndarray,
-        goal_retreated: np.ndarray,
+        start_point: np.ndarray,
+        goal_point: np.ndarray,
     ) -> None:
         """Clear the old trajectory and mark the new task."""
-        self.surface_line.set_data_3d([], [], [])
-        self.retreated_line.set_data_3d([], [], [])
-        self.current_surface.set_data_3d([], [], [])
-        self.current_retreated.set_data_3d([], [], [])
+        self.point_line.set_data_3d([], [], [])
+        self.current_point_artist.set_data_3d([], [], [])
 
         if self.start_artist is not None:
             self.start_artist.remove()
@@ -191,9 +183,9 @@ class EvalRenderer:
             self.goal_link.remove()
 
         self.start_artist = self.ax.scatter(
-            [start_retreated[0]],
-            [start_retreated[1]],
-            [start_retreated[2]],
+            [start_point[0]],
+            [start_point[1]],
+            [start_point[2]],
             c="limegreen",
             s=120,
             edgecolors="black",
@@ -202,9 +194,9 @@ class EvalRenderer:
             depthshade=False,
         )
         self.goal_artist = self.ax.scatter(
-            [goal_retreated[0]],
-            [goal_retreated[1]],
-            [goal_retreated[2]],
+            [goal_point[0]],
+            [goal_point[1]],
+            [goal_point[2]],
             c="gold",
             s=120,
             edgecolors="black",
@@ -214,18 +206,18 @@ class EvalRenderer:
         )
 
         (self.start_link,) = self.ax.plot(
-            [start_surface[0], start_retreated[0]],
-            [start_surface[1], start_retreated[1]],
-            [start_surface[2], start_retreated[2]],
+            [start_surface[0], start_point[0]],
+            [start_surface[1], start_point[1]],
+            [start_surface[2], start_point[2]],
             color="limegreen",
             linestyle="--",
             linewidth=1.5,
             alpha=0.9,
         )
         (self.goal_link,) = self.ax.plot(
-            [goal_surface[0], goal_retreated[0]],
-            [goal_surface[1], goal_retreated[1]],
-            [goal_surface[2], goal_retreated[2]],
+            [goal_surface[0], goal_point[0]],
+            [goal_surface[1], goal_point[1]],
+            [goal_surface[2], goal_point[2]],
             color="goldenrod",
             linestyle="--",
             linewidth=1.5,
@@ -241,30 +233,20 @@ class EvalRenderer:
         self,
         episode_index: int,
         total_episodes: int,
-        surface_path: np.ndarray,
-        retreated_path: np.ndarray,
+        point_path: np.ndarray,
         reward: float,
         episode_return: float,
         step: int,
         goal_distance: float,
     ) -> None:
         """Refresh the trajectory lines and overlay metrics."""
-        self.surface_line.set_data_3d(
-            surface_path[:, 0], surface_path[:, 1], surface_path[:, 2]
+        self.point_line.set_data_3d(
+            point_path[:, 0], point_path[:, 1], point_path[:, 2]
         )
-        self.retreated_line.set_data_3d(
-            retreated_path[:, 0], retreated_path[:, 1], retreated_path[:, 2]
-        )
-
-        self.current_surface.set_data_3d(
-            [surface_path[-1, 0]],
-            [surface_path[-1, 1]],
-            [surface_path[-1, 2]],
-        )
-        self.current_retreated.set_data_3d(
-            [retreated_path[-1, 0]],
-            [retreated_path[-1, 1]],
-            [retreated_path[-1, 2]],
+        self.current_point_artist.set_data_3d(
+            [point_path[-1, 0]],
+            [point_path[-1, 1]],
+            [point_path[-1, 2]],
         )
 
         self.status_text.set_text(
@@ -341,11 +323,13 @@ def build_agent_from_checkpoint(
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    algorithm_cfg = config.get("algorithm", {})
     disturbance_cfg = config.get("disturbance", {})
     env = MathEnv(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )
 
@@ -405,12 +389,14 @@ def main() -> None:
     env_cfg = config.get("env", {})
     planner_cfg = config.get("planner", {})
     rl_cfg = config.get("rl", {})
+    algorithm_cfg = config.get("algorithm", {})
     disturbance_cfg = config.get("disturbance", {})
 
     env = MathEnv(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )
     agent = build_agent_from_checkpoint(checkpoint, config, device=device)
@@ -451,14 +437,13 @@ def main() -> None:
         reward = 0.0
 
         if renderer is not None and env.current_task is not None:
-            goal_state = env._query_runtime_state(env.goal_uv)
             renderer.reset_episode(
                 episode_index=episode_index,
                 total_episodes=total_episodes,
-                start_surface=env.current_surface_state["compensated_point"],
-                goal_surface=goal_state["compensated_point"],
-                start_retreated=env.current_surface_state["retreated_point"],
-                goal_retreated=goal_state["retreated_point"],
+                start_surface=env.current_task["start"]["surface_point"],
+                goal_surface=env.current_task["goal"]["surface_point"],
+                start_point=env.current_task["start"]["retreated_point"],
+                goal_point=env.current_task["goal"]["retreated_point"],
             )
 
         while not done:
@@ -477,26 +462,25 @@ def main() -> None:
                 renderer.update(
                     episode_index=episode_index,
                     total_episodes=total_episodes,
-                    surface_path=np.asarray(env.path_surface, dtype=np.float32),
-                    retreated_path=np.asarray(env.path_retreated, dtype=np.float32),
+                    point_path=np.asarray(env.path_points, dtype=np.float32),
                     reward=reward,
                     episode_return=float(env.episode_return),
                     step=int(env.current_step),
-                    goal_distance=float(info["goal_distance_uv"]),
+                    goal_distance=float(info["goal_distance"]),
                 )
 
         episode_summary = info["episode"]
         returns.append(float(episode_summary["return"]))
         lengths.append(int(episode_summary["length"]))
         success_flags.append(1.0 if episode_summary["success"] else 0.0)
-        min_goal_distances.append(float(episode_summary["min_goal_distance_uv"]))
+        min_goal_distances.append(float(episode_summary["min_goal_distance"]))
 
         print(
             f"[Episode {episode_index:03d}] "
             f"reward={episode_summary['return']:.3f} "
             f"length={episode_summary['length']} "
             f"success={episode_summary['success']} "
-            f"min_dist={episode_summary['min_goal_distance_uv']:.4f}"
+            f"min_dist={episode_summary['min_goal_distance']:.4f}"
         )
 
         if renderer is not None:
@@ -505,7 +489,7 @@ def main() -> None:
                 total_episodes=total_episodes,
                 episode_return=float(episode_summary["return"]),
                 success=bool(episode_summary["success"]),
-                min_goal_distance=float(episode_summary["min_goal_distance_uv"]),
+                min_goal_distance=float(episode_summary["min_goal_distance"]),
             )
 
     mean_reward = float(np.mean(returns)) if returns else float("nan")

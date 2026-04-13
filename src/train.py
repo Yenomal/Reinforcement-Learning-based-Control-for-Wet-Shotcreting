@@ -261,7 +261,7 @@ def summarize_episodes(
     rewards = [float(ep["return"]) for ep in episode_summaries]
     lengths = [int(ep["length"]) for ep in episode_summaries]
     success = [1.0 if ep["success"] else 0.0 for ep in episode_summaries]
-    min_distances = [float(ep["min_goal_distance_uv"]) for ep in episode_summaries]
+    min_distances = [float(ep["min_goal_distance"]) for ep in episode_summaries]
     return (
         float(np.mean(rewards)),
         float(np.mean(lengths)),
@@ -555,6 +555,7 @@ def main() -> None:
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
     )
     run_dir = build_run_dir(config)

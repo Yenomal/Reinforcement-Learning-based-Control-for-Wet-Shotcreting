@@ -1,0 +1,115 @@
+{
+  "global_scale": 0.003686347088285246,
+  "joints_world_unscaled": {
+    "yaw": [
+      422.577606,
+      -1788.987427,
+      -129.225052
+    ],
+    "shoulder": [
+      422.577606,
+      -1821.349731,
+      -106.787308
+    ],
+    "elbow": [
+      422.577606,
+      -2068.202393,
+      62.970108
+    ],
+    "wrist": [
+      422.577606,
+      -2265.193359,
+      -50.970345
+    ]
+  },
+  "joint_limits_deg": {
+    "turret_yaw": [
+      -90.0,
+      90.0
+    ],
+    "shoulder_pitch": [
+      -20.0,
+      60.0
+    ],
+    "elbow_pitch": [
+      -100.0,
+      100.0
+    ],
+    "wrist_pitch": [
+      -110.0,
+      70.0
+    ]
+  },
+  "exported_meshes": {
+    "base_link": [
+      "meshes/base_link/3d66-Editable_mesh-23002546-008.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-009.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-010.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-014.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-015.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-016.obj",
+      "meshes/base_link/3d66-Editable_mesh-23002546-017.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-025.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-027.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-028.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-029.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-031.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-032.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-034.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-035.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-037.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-038.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-039.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-040.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-041.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-042.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-043.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-053.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-057.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-058.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-059.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-060.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-061.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-062.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-063.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-064.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-065.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-066.obj",
+      "meshes/base_link/3d66-Editable_Poly-23002546-070.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-017.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-018.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-019.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-020.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-021.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-022.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-023.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-024.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-025.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-026.obj",
+      "meshes/base_link/3d66-PolyMeshObject-23002546-027.obj"
+    ],
+    "yaw_link": [
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-044.obj",
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-045.obj",
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-046.obj",
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-047.obj",
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-048.obj",
+      "meshes/yaw_link/3d66-Editable_Poly-23002546-049.obj"
+    ],
+    "boom1_link": [
+      "meshes/boom1_link/3d66-Editable_Poly-23002546-050.obj",
+      "meshes/boom1_link/3d66-Editable_Poly-23002546-054.obj",
+      "meshes/boom1_link/3d66-Editable_Poly-23002546-067.obj",
+      "meshes/boom1_link/3d66-Editable_Poly-23002546-055.obj",
+      "meshes/boom1_link/3d66-Editable_Poly-23002546-068.obj"
+    ],
+    "boom2_link": [
+      "meshes/boom2_link/3d66-Editable_Poly-23002546-051.obj",
+      "meshes/boom2_link/3d66-Editable_Poly-23002546-056.obj",
+      "meshes/boom2_link/3d66-Editable_Poly-23002546-069.obj"
+    ],
+    "boom3_link": [
+      "meshes/boom3_link/3d66-Editable_Poly-23002546-052.obj"
+    ]
+  }
+}
