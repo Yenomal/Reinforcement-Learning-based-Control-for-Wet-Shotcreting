@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 import torch
@@ -15,6 +15,12 @@ from .algorithm.ppo import PPOAgent
 from .algorithm.sac import SACAgent
 from .config import load_config
 from .rl_env.math_env import MathEnv
+from .rock_3D.robot_4dof.pybullet_player import PyBulletRobotPlayer
+from .rock_3D.tools.build_tunnel_environment import (
+    SurfaceGrid,
+    load_surface_grid,
+    plotly_to_pybullet,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,7 +70,7 @@ class EvalRenderer:
 
     def __init__(
         self,
-        rock_env: Dict[str, Any],
+        surface_scene: Dict[str, np.ndarray],
         render_pause: float = 0.05,
         episode_pause: float = 0.8,
     ) -> None:
@@ -88,14 +94,13 @@ class EvalRenderer:
         self.ax = self.fig.add_subplot(111, projection="3d")
         self.fig.subplots_adjust(bottom=0.14)
 
-        points_grid = rock_env["points_grid"]
-        radius_grid = rock_env["radius_grid"]
-        x_grid = points_grid[:, :, 0]
-        y_grid = points_grid[:, :, 1]
-        z_grid = points_grid[:, :, 2]
+        x_grid = surface_scene["x_grid"]
+        y_grid = surface_scene["y_grid"]
+        z_grid = surface_scene["z_grid"]
+        color_grid = surface_scene["color_grid"]
 
-        norm = Normalize(vmin=float(radius_grid.min()), vmax=float(radius_grid.max()))
-        facecolors = cm.get_cmap("terrain")(norm(radius_grid))
+        norm = Normalize(vmin=float(color_grid.min()), vmax=float(color_grid.max()))
+        facecolors = cm.get_cmap("terrain")(norm(color_grid))
         self.ax.plot_surface(
             x_grid,
             y_grid,
@@ -157,6 +162,17 @@ class EvalRenderer:
     def wait_for_start(self) -> None:
         """Block in the UI loop until the Start button is pressed."""
         while not self.started:
+            self.fig.canvas.draw_idle()
+            self.plt.pause(0.05)
+
+    def wait_for_start_with_idle(
+        self,
+        on_idle: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Block until Start is pressed while optionally ticking other viewers."""
+        while not self.started:
+            if on_idle is not None:
+                on_idle()
             self.fig.canvas.draw_idle()
             self.plt.pause(0.05)
 
@@ -275,6 +291,59 @@ class EvalRenderer:
         self.plt.show()
 
 
+def _surface_scene_from_rock_env(rock_env: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    points_grid = np.asarray(rock_env["points_grid"], dtype=np.float32)
+    radius_grid = np.asarray(rock_env["radius_grid"], dtype=np.float32)
+    return {
+        "x_grid": points_grid[:, :, 0],
+        "y_grid": points_grid[:, :, 1],
+        "z_grid": points_grid[:, :, 2],
+        "color_grid": radius_grid,
+    }
+
+
+def _surface_scene_from_html(html_path: Path) -> Dict[str, np.ndarray]:
+    grid: SurfaceGrid = load_surface_grid(html_path)
+    x_grid = np.zeros((grid.rows, grid.cols), dtype=np.float32)
+    y_grid = np.zeros((grid.rows, grid.cols), dtype=np.float32)
+    z_grid = np.zeros((grid.rows, grid.cols), dtype=np.float32)
+    color_grid = np.asarray(grid.surfacecolor, dtype=np.float32).reshape(grid.rows, grid.cols)
+
+    for row in range(grid.rows):
+        for col in range(grid.cols):
+            index = row * grid.cols + col
+            x_val, y_val, z_val = plotly_to_pybullet(
+                float(grid.x[index]),
+                float(grid.y[index]),
+                float(grid.z[index]),
+            )
+            x_grid[row, col] = x_val
+            y_grid[row, col] = y_val
+            z_grid[row, col] = z_val
+
+    return {
+        "x_grid": x_grid,
+        "y_grid": y_grid,
+        "z_grid": z_grid,
+        "color_grid": color_grid,
+    }
+
+
+def load_eval_surface_scene(
+    eval_cfg: Dict[str, Any],
+    rock_env: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    """Load the fixed evaluation surface scene, defaulting to rock_env fallback."""
+    html_path_raw = str(eval_cfg.get("digital_env_html", "")).strip()
+    if not html_path_raw:
+        return _surface_scene_from_rock_env(rock_env)
+
+    html_path = Path(html_path_raw)
+    if not html_path.exists():
+        raise FileNotFoundError(f"Digital environment HTML not found: {html_path}")
+    return _surface_scene_from_html(html_path)
+
+
 def build_device(requested_device: Optional[str]) -> torch.device:
     """Resolve the evaluation device."""
     if requested_device is not None:
@@ -290,7 +359,7 @@ def build_device(requested_device: Optional[str]) -> torch.device:
 
 def load_checkpoint(checkpoint_path: Path, device: torch.device) -> Dict[str, Any]:
     """Load a saved training checkpoint."""
-    return torch.load(checkpoint_path, map_location=device)
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
 
 
 def build_agent_from_checkpoint(
@@ -394,15 +463,28 @@ def main() -> None:
     headless = args.headless
     if headless is None:
         headless = bool(eval_cfg.get("headless", False))
+    pybullet_cfg = dict(eval_cfg.get("pybullet", {}))
+    enable_pybullet = bool(pybullet_cfg.get("enable", not headless))
+    surface_scene = load_eval_surface_scene(eval_cfg=eval_cfg, rock_env=env.rock_env)
 
     renderer = None
     if not headless:
         renderer = EvalRenderer(
-            rock_env=env.rock_env,
+            surface_scene=surface_scene,
             render_pause=render_pause,
             episode_pause=episode_pause,
         )
-        renderer.wait_for_start()
+    player = None
+    if enable_pybullet:
+        player = PyBulletRobotPlayer(
+            dt=float(pybullet_cfg.get("dt", 1.0 / 240.0)),
+            headless=bool(pybullet_cfg.get("headless", headless)),
+            show_tunnel=bool(pybullet_cfg.get("show_tunnel", True)),
+            show_plane=bool(pybullet_cfg.get("show_plane", False)),
+            robot_position=pybullet_cfg.get("robot_position", (0.0, 0.0, 0.45)),
+            robot_yaw_deg=float(pybullet_cfg.get("robot_yaw_deg", 90.0)),
+            tunnel_position=pybullet_cfg.get("tunnel_position", (0.0, 0.0, 0.0)),
+        )
 
     returns = []
     lengths = []
@@ -416,12 +498,15 @@ def main() -> None:
     print(f"Device: {device}")
     print(f"Episodes: {total_episodes}")
     print(f"Headless: {headless}")
+    print(f"PyBullet: {enable_pybullet}")
 
     for episode_index in range(1, total_episodes + 1):
         observation, info = env.reset(seed=eval_seed + episode_index - 1)
         done = False
         reward = 0.0
 
+        if player is not None:
+            player.reset_episode(info["current_q_deg"])
         if renderer is not None and env.current_task is not None:
             renderer.reset_episode(
                 episode_index=episode_index,
@@ -429,6 +514,10 @@ def main() -> None:
                 start_point=env.current_task["start"]["point"],
                 goal_point=env.current_task["goal"]["point"],
             )
+            if episode_index == 1:
+                renderer.wait_for_start_with_idle(
+                    on_idle=player.idle if player is not None else None
+                )
 
         while not done:
             observation_tensor = torch.as_tensor(
@@ -442,6 +531,8 @@ def main() -> None:
             observation, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
+            if player is not None:
+                player.update(info["current_q_deg"])
             if renderer is not None:
                 renderer.update(
                     episode_index=episode_index,
@@ -491,6 +582,8 @@ def main() -> None:
 
     if renderer is not None:
         renderer.finalize()
+    if player is not None:
+        player.close()
 
 
 if __name__ == "__main__":

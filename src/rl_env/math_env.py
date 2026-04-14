@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from ..component.disturbance import SensorNoise
-from ..component.planner import sample_planner_task_from_kinematics
+from ..component.planner import sample_planner_task_from_environment
 from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
 from ..rock_env.rock_wall import generate_rock_environment
 
@@ -109,14 +109,20 @@ class MathEnv:
             self._rng = np.random.default_rng(seed)
 
         sampled_seed = int(self._rng.integers(0, 2**31 - 1))
-        self.current_task = sample_planner_task_from_kinematics(
+        self.current_task = sample_planner_task_from_environment(
+            rock_env=self.rock_env,
             kinematics=self.kinematics,
+            planner_cfg=self.planner_cfg,
+            rl_cfg=self.rl_cfg,
             seed=sampled_seed,
-            start_configuration_deg=self.rl_cfg.get("initial_configuration_deg"),
         )
 
         self.current_q = self.current_task["start"]["q"].astype(np.float32)
-        self.goal_q = self.current_task["goal"]["q"].astype(np.float32)
+        goal_q_guess = self.current_task["goal"].get("q_guess")
+        if goal_q_guess is None:
+            self.goal_q = np.full(self.action_dim, np.nan, dtype=np.float32)
+        else:
+            self.goal_q = np.asarray(goal_q_guess, dtype=np.float32).reshape(self.action_dim)
         self.current_point = self.current_task["start"]["point"].astype(np.float32)
         self.goal_point = self.current_task["goal"]["point"].astype(np.float32)
         self.prev_action = np.zeros(self.action_dim, dtype=np.float32)
@@ -238,8 +244,6 @@ class MathEnv:
         info = {
             "current_q": self.current_q.copy(),
             "current_q_deg": np.rad2deg(self.current_q).astype(np.float32),
-            "goal_q": self.goal_q.copy(),
-            "goal_q_deg": np.rad2deg(self.goal_q).astype(np.float32),
             "current_point": self.current_point.copy(),
             "goal_point": self.goal_point.copy(),
             "goal_distance": self._goal_distance(self.current_point),
@@ -247,13 +251,27 @@ class MathEnv:
             "episode_return": self.episode_return,
             "success": success,
         }
+        if np.all(np.isfinite(self.goal_q)):
+            info["goal_q"] = self.goal_q.copy()
+            info["goal_q_deg"] = np.rad2deg(self.goal_q).astype(np.float32)
+        if self.current_task is not None:
+            info["goal_surface_point"] = self.current_task["goal"]["surface_point"].copy()
+            info["goal_surface_normal"] = self.current_task["goal"]["surface_normal"].copy()
+            info["goal_spray_angle_deg"] = float(self.current_task["goal"]["spray_angle_deg"])
+            if "reachability" in self.current_task["goal"]:
+                info["goal_reachability"] = {
+                    "reachable": bool(self.current_task["goal"]["reachability"]["reachable"]),
+                    "best_distance": float(self.current_task["goal"]["reachability"]["best_distance"]),
+                }
 
         if done and self.current_task is not None:
             info["episode"] = {
                 "start_q_deg": self.current_task["start"]["q_deg"].copy(),
-                "goal_q_deg": self.current_task["goal"]["q_deg"].copy(),
                 "start_point": self.current_task["start"]["point"].copy(),
                 "goal_point": self.current_task["goal"]["point"].copy(),
+                "goal_surface_point": self.current_task["goal"]["surface_point"].copy(),
+                "goal_surface_normal": self.current_task["goal"]["surface_normal"].copy(),
+                "goal_spray_angle_deg": float(self.current_task["goal"]["spray_angle_deg"]),
                 "q_path": np.asarray(self.path_q, dtype=np.float32),
                 "point_path": np.asarray(self.path_points, dtype=np.float32),
                 "return": float(self.episode_return),
@@ -261,4 +279,11 @@ class MathEnv:
                 "success": bool(success),
                 "min_goal_distance": float(self.min_goal_distance),
             }
+            if np.all(np.isfinite(self.goal_q)):
+                info["episode"]["goal_q_deg"] = np.rad2deg(self.goal_q).astype(np.float32)
+            if "reachability" in self.current_task["goal"]:
+                info["episode"]["goal_reachability"] = {
+                    "reachable": bool(self.current_task["goal"]["reachability"]["reachable"]),
+                    "best_distance": float(self.current_task["goal"]["reachability"]["best_distance"]),
+                }
         return info

@@ -11,7 +11,15 @@ robot:
 
 # 任务采样参数
 planner:
-  seed: 42                   # 任务随机种子
+  seed: 42                          # 任务随机种子
+  spray_angle_range_deg: [-60.0, 60.0] # 以拱顶为 0 度，湿喷区域角度范围
+  spray_standoff_distance: 0.5        # 从壁面沿法向向内投影的目标距离
+  axial_margin_ratio: 0.05          # 隧道轴向两端留白比例，避免贴边采样
+  tunnel_axial_scale: 1.5           # 旧数学隧道轴向到 PyBullet 世界坐标的缩放
+  use_reachability_check: false     # 是否启用随机关节采样近似可达性检查
+  reachability_samples: 2048        # 可达性近似采样次数
+  reachability_tolerance: 0.20      # 可达性判定容差
+  max_goal_sampling_trials: 256     # 目标采样最大重试次数
 
 # 扰动参数
 disturbance:
@@ -27,7 +35,7 @@ rl:
   env_name: math_env         # RL 环境名称
   max_episode_steps: 200      # 单局最大步数
   initial_configuration_deg: [0.0, 0.0, 0.0, 0.0] # 起点固定关节角
-  goal_tolerance: 0.01       # 3D 欧氏距离下的到达阈值
+  goal_tolerance: 0.2       # 3D 欧氏距离下的到达阈值
   max_joint_delta_deg: [4.0, 4.0, 4.0, 4.0] # 每步允许的最大关节变化量
   workspace_margin: 0.25     # FK 采样工作空间边界扩展
   progress_reward_weight: 2.0 # 朝目标前进奖励权重
@@ -45,7 +53,7 @@ model:
 
 # 算法公共参数
 algorithm:
-  name: ppo   # 当前算法名称
+  name: sac   # 当前算法名称
   gamma: 0.99 # 折扣因子
 
 # PPO 专有参数
@@ -56,7 +64,7 @@ ppo:
   clip_ratio: 0.15            # PPO 截断系数
   value_coef: 5e-1            # 值函数损失权重
   normalize_value_targets: true # 是否归一化 value 目标
-  entropy_coef: 0.000        # 熵奖励权重
+  entropy_coef: 0.005        # 熵奖励权重
   max_grad_norm: 0.5         # 梯度裁剪上限
   rollout_steps: 2048        # 每次更新采样步数
   update_epochs: 10          # 每次更新轮数
@@ -93,9 +101,19 @@ train:
 
 # 评估参数
 eval:
-  checkpoint: ""      # 默认权重路径
+  checkpoint: "./outputs/runs/sac_math_env_20260414_092223/final.pt"      # 默认权重路径
   episodes: 5         # 评估回合数
   seed: 123           # 评估随机种子
   headless: false     # 是否关闭可视化
+  digital_env_html: ./src/rock_3D/rock_environment.html # 数字环境固定背景 HTML，会按 PyBullet 坐标映射显示
   render_pause: 0.05  # 渲染刷新间隔
   episode_pause: 0.8  # 回合切换停顿
+  pybullet:
+    enable: true
+    headless: false
+    dt: 0.0041666667
+    show_tunnel: true
+    show_plane: false
+    robot_position: [0.0, 0.0, 0.45]
+    robot_yaw_deg: 90.0
+    tunnel_position: [0.0, 0.0, 0.0]
