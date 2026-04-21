@@ -16,8 +16,8 @@ import torch
 import yaml
 from plotly.subplots import make_subplots
 
-from .algorithm.ppo import PPOAgent
-from .algorithm.sac import SACAgent
+from .algorithm.ppo import PPOAgent, build_ppo_config
+from .algorithm.sac import SACAgent, build_sac_config
 from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
 from .config import load_config
 from .rl_env.math_env import MathEnv
@@ -319,29 +319,17 @@ def run_ppo_training(
 ) -> None:
     """Train PPO using an on-policy rollout buffer."""
     train_cfg = config.get("train", {})
-    algorithm_cfg = config.get("algorithm", {})
-    ppo_cfg = dict(config.get("ppo", {}))
-    ppo_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+    ppo_cfg = build_ppo_config(config.get("ppo", {}))
 
-    total_updates = int(ppo_cfg.get("total_updates", 200))
-    rollout_steps = int(ppo_cfg.get("rollout_steps", 1024))
+    total_updates = int(config.get("ppo", {}).get("total_updates", 200))
+    rollout_steps = int(ppo_cfg["rollout_steps"])
     log_interval = int(train_cfg.get("log_interval", 1))
-    save_interval = int(train_cfg.get("save_interval", 10))
 
     if total_updates <= 0:
         raise ValueError("ppo.total_updates must be a positive integer.")
 
     observation, _ = env.reset(seed=int(train_cfg.get("seed", 42)))
-    best_mean_reward = float("-inf")
     metrics_history = list(metrics_history or [])
-    if metrics_history:
-        historical_rewards = [
-            float(row["mean_reward"])
-            for row in metrics_history
-            if row.get("mean_reward") not in (None, "")
-        ]
-        if historical_rewards:
-            best_mean_reward = max(historical_rewards)
 
     print("=" * 72)
     print("PPO Training On MathEnv")
@@ -369,13 +357,6 @@ def run_ppo_training(
         if log_interval > 0 and update % log_interval == 0:
             log_metrics("Update", metrics)
 
-        if not np.isnan(metrics["mean_reward"]) and metrics["mean_reward"] > best_mean_reward:
-            best_mean_reward = metrics["mean_reward"]
-            save_checkpoint(run_dir, "best.pt", agent, config, update, metrics)
-
-        if save_interval > 0 and update % save_interval == 0:
-            save_checkpoint(run_dir, "latest.pt", agent, config, update, metrics)
-
     write_metrics_csv(run_dir, metrics_history)
     save_training_curves(run_dir, metrics_history)
     save_checkpoint(run_dir, "final.pt", agent, config, total_updates, metrics_history[-1])
@@ -396,17 +377,14 @@ def run_sac_training(
 ) -> None:
     """Train SAC using a replay buffer."""
     train_cfg = config.get("train", {})
-    algorithm_cfg = config.get("algorithm", {})
-    sac_cfg = dict(config.get("sac", {}))
-    sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+    sac_cfg = build_sac_config(config.get("sac", {}))
 
-    total_steps = int(sac_cfg.get("total_steps", 50000))
-    batch_size = int(sac_cfg.get("batch_size", 256))
-    buffer_size = int(sac_cfg.get("buffer_size", 100000))
-    learning_starts = int(sac_cfg.get("learning_starts", 1000))
-    updates_per_step = int(sac_cfg.get("updates_per_step", 1))
-    log_interval_steps = int(sac_cfg.get("log_interval_steps", 1000))
-    save_interval_steps = int(sac_cfg.get("save_interval_steps", 5000))
+    total_steps = int(config.get("sac", {}).get("total_steps", 50000))
+    batch_size = int(sac_cfg["batch_size"])
+    buffer_size = int(sac_cfg["buffer_size"])
+    learning_starts = int(sac_cfg["learning_starts"])
+    updates_per_step = int(sac_cfg["updates_per_step"])
+    log_interval_steps = int(sac_cfg["log_interval_steps"])
 
     if total_steps <= 0:
         raise ValueError("sac.total_steps must be a positive integer.")
@@ -419,19 +397,10 @@ def run_sac_training(
     observation, _ = env.reset(seed=int(train_cfg.get("seed", 42)))
     recent_episodes: List[Dict[str, Any]] = []
     metrics_history = list(metrics_history or [])
-    best_mean_reward = float("-inf")
     latest_metrics: Dict[str, Any] = {
         "policy_loss": float("nan"),
         "value_loss": float("nan"),
     }
-    if metrics_history:
-        historical_rewards = [
-            float(row["mean_reward"])
-            for row in metrics_history
-            if row.get("mean_reward") not in (None, "")
-        ]
-        if historical_rewards:
-            best_mean_reward = max(historical_rewards)
 
     print("=" * 72)
     print("SAC Training On MathEnv")
@@ -485,29 +454,6 @@ def run_sac_training(
 
             if log_interval_steps > 0:
                 log_metrics("Step", metrics)
-
-            if not np.isnan(metrics["mean_reward"]) and metrics["mean_reward"] > best_mean_reward:
-                best_mean_reward = metrics["mean_reward"]
-                save_checkpoint(
-                    run_dir,
-                    "best.pt",
-                    agent,
-                    config,
-                    step,
-                    metrics,
-                    extra_state={"replay_buffer": replay_buffer.state_dict()},
-                )
-
-            if save_interval_steps > 0 and step % save_interval_steps == 0:
-                save_checkpoint(
-                    run_dir,
-                    "latest.pt",
-                    agent,
-                    config,
-                    step,
-                    metrics,
-                    extra_state={"replay_buffer": replay_buffer.state_dict()},
-                )
 
             recent_episodes = []
 
@@ -580,7 +526,7 @@ def main() -> None:
     print(f"Saving outputs to: {run_dir}")
 
     if algorithm_name == "ppo":
-        ppo_cfg = dict(config.get("ppo", {}))
+        ppo_cfg = build_ppo_config(config.get("ppo", {}))
         ppo_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
         agent = PPOAgent(
             observation_dim=env.observation_dim,
@@ -603,7 +549,7 @@ def main() -> None:
             metrics_history=metrics_history,
         )
     elif algorithm_name == "sac":
-        sac_cfg = dict(config.get("sac", {}))
+        sac_cfg = build_sac_config(config.get("sac", {}))
         sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
         agent = SACAgent(
             observation_dim=env.observation_dim,

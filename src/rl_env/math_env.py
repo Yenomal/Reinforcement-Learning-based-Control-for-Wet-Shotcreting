@@ -71,7 +71,6 @@ class MathEnv:
 
         self.max_episode_steps = int(self.rl_cfg.get("max_episode_steps", 200))
         self.goal_tolerance = float(self.rl_cfg.get("goal_tolerance", 0.2))
-        self.potential_gamma = float(self.algorithm_cfg.get("gamma", 0.99))
         self.progress_reward_weight = float(
             self.rl_cfg.get("progress_reward_weight", 1.0)
         )
@@ -159,31 +158,17 @@ class MathEnv:
         self.current_point = fk["tool_tip"].astype(np.float32)
         self.current_step += 1
 
+        previous_goal_distance = self.previous_goal_distance
         goal_distance = self._goal_distance(self.current_point)
-        progress_reward = self.progress_reward_weight * (
-            self.previous_goal_distance - self.potential_gamma * goal_distance
+        progress_reward, previous_phi, current_phi = self._compute_progress_reward(
+            previous_goal_distance,
+            goal_distance,
         )
-        step_penalty = self.step_penalty
-        action_penalty = self.action_l2_weight * float(np.sum(bounded_joint_delta**2))
-        smoothness_penalty = self.action_smoothness_weight * float(
-            np.sum((bounded_joint_delta - self.prev_action) ** 2)
-        )
-        boundary_penalty = self.boundary_penalty if boundary_hit else 0.0
-
-        reward = (
-            progress_reward
-            - step_penalty
-            - action_penalty
-            - smoothness_penalty
-            - boundary_penalty
-        )
+        reward = progress_reward
 
         success = goal_distance <= self.goal_tolerance
         terminated = success
         truncated = self.current_step >= self.max_episode_steps and not terminated
-
-        if terminated:
-            reward += self.success_reward
 
         self.episode_return += reward
         self.previous_goal_distance = goal_distance
@@ -196,16 +181,48 @@ class MathEnv:
         info = self._build_info(done=terminated or truncated, success=success)
         info["reward_terms"] = {
             "progress_reward": progress_reward,
-            "potential_gamma": self.potential_gamma,
-            "step_penalty": step_penalty,
-            "action_penalty": action_penalty,
-            "smoothness_penalty": smoothness_penalty,
-            "boundary_penalty": boundary_penalty,
+            "previous_distance": previous_goal_distance,
+            "current_distance": goal_distance,
+            "previous_phi": previous_phi,
+            "current_phi": current_phi,
+            "boundary_hit": float(boundary_hit),
         }
         return observation, float(reward), terminated, truncated, info
 
     def _goal_distance(self, point: np.ndarray) -> float:
         return float(np.linalg.norm(self.goal_point - point))
+
+    def _distance_potential(self, distance: float) -> float:
+        """Potential function phi(d) used by the reward."""
+        log_scale = max(self.goal_tolerance, 1e-6)
+        phi = float(np.log1p(distance / log_scale))
+
+        # Raw-distance ablation:
+        # phi = float(distance)
+
+        return phi
+
+    def _compute_progress_reward(
+        self,
+        previous_goal_distance: float,
+        goal_distance: float,
+    ) -> Tuple[float, float, float]:
+        """Compute the active distance-based reward."""
+        previous_phi = self._distance_potential(previous_goal_distance)
+        current_phi = self._distance_potential(goal_distance)
+
+        reward = self.progress_reward_weight * (previous_phi - current_phi)
+
+        # Gamma-shaped potential ablation:
+        # gamma = float(self.algorithm_cfg.get("gamma", 0.99))
+        # reward = self.progress_reward_weight * (
+        #     previous_phi - gamma * current_phi
+        # )
+
+        # Stage-cost ablation:
+        # reward = -self.progress_reward_weight * current_phi
+
+        return float(reward), float(previous_phi), float(current_phi)
 
     def _normalize_point(self, point: np.ndarray) -> np.ndarray:
         normalized = (point - self.point_lower) / self.point_span

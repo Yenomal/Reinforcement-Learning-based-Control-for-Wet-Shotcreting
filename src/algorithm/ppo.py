@@ -16,6 +16,32 @@ from ..model.mlp import MLP
 
 SQUASH_EPS = 1.0e-6
 
+DEFAULT_PPO_CONFIG: Dict[str, Any] = {
+    "lr": 3.0e-4,
+    "gae_lambda": 0.95,
+    "clip_ratio": 0.2,
+    "value_coef": 0.5,
+    "normalize_value_targets": False,
+    "entropy_coef": 0.0,
+    "max_grad_norm": 0.5,
+    "rollout_steps": 2048,
+    "update_epochs": 10,
+    "minibatch_size": 64,
+    "normalize_advantages": True,
+}
+
+
+def build_ppo_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Build PPO hyperparameters from the project defaults."""
+    resolved = dict(DEFAULT_PPO_CONFIG)
+    if overrides is None:
+        return resolved
+
+    for key in DEFAULT_PPO_CONFIG:
+        if key in overrides:
+            resolved[key] = overrides[key]
+    return resolved
+
 
 class RunningValueNormalizer:
     """Running mean/std normalizer for value targets."""
@@ -93,6 +119,7 @@ class PPOAgent:
         device: torch.device,
     ) -> None:
         self.device = device
+        resolved_cfg = build_ppo_config(algorithm_cfg)
 
         hidden_sizes = model_cfg.get("hidden_sizes", [256, 256])
         activation = str(model_cfg.get("activation", "tanh"))
@@ -119,23 +146,19 @@ class PPOAgent:
         ]
         self.optimizer = torch.optim.Adam(
             parameters,
-            lr=float(algorithm_cfg.get("lr", 3.0e-4)),
+            lr=float(resolved_cfg["lr"]),
         )
 
         self.gamma = float(algorithm_cfg.get("gamma", 0.99))
-        self.gae_lambda = float(algorithm_cfg.get("gae_lambda", 0.95))
-        self.clip_ratio = float(algorithm_cfg.get("clip_ratio", 0.2))
-        self.value_coef = float(algorithm_cfg.get("value_coef", 0.5))
-        self.entropy_coef = float(algorithm_cfg.get("entropy_coef", 0.0))
-        self.max_grad_norm = float(algorithm_cfg.get("max_grad_norm", 0.5))
-        self.update_epochs = int(algorithm_cfg.get("update_epochs", 10))
-        self.minibatch_size = int(algorithm_cfg.get("minibatch_size", 256))
-        self.normalize_advantages = bool(
-            algorithm_cfg.get("normalize_advantages", True)
-        )
-        self.normalize_value_targets = bool(
-            algorithm_cfg.get("normalize_value_targets", True)
-        )
+        self.gae_lambda = float(resolved_cfg["gae_lambda"])
+        self.clip_ratio = float(resolved_cfg["clip_ratio"])
+        self.value_coef = float(resolved_cfg["value_coef"])
+        self.entropy_coef = float(resolved_cfg["entropy_coef"])
+        self.max_grad_norm = float(resolved_cfg["max_grad_norm"])
+        self.update_epochs = int(resolved_cfg["update_epochs"])
+        self.minibatch_size = int(resolved_cfg["minibatch_size"])
+        self.normalize_advantages = bool(resolved_cfg["normalize_advantages"])
+        self.normalize_value_targets = bool(resolved_cfg["normalize_value_targets"])
         self.value_normalizer = RunningValueNormalizer()
 
     def _distribution(self, observations: torch.Tensor) -> Normal:

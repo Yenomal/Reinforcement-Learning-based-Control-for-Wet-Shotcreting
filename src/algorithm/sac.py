@@ -17,6 +17,34 @@ from ..model.mlp import MLP
 
 LOG_STD_EPS = 1e-6
 
+DEFAULT_SAC_CONFIG: Dict[str, Any] = {
+    "actor_lr": 3.0e-4,
+    "critic_lr": 3.0e-4,
+    "alpha_lr": 3.0e-4,
+    "tau": 0.005,
+    "batch_size": 256,
+    "buffer_size": 1_000_000,
+    "learning_starts": 100,
+    "updates_per_step": 1,
+    "log_interval_steps": 2000,
+    "alpha_init": 1.0,
+    "target_entropy": "auto",
+    "log_std_min": -5.0,
+    "log_std_max": 2.0,
+}
+
+
+def build_sac_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Build SAC hyperparameters from the project defaults."""
+    resolved = dict(DEFAULT_SAC_CONFIG)
+    if overrides is None:
+        return resolved
+
+    for key in DEFAULT_SAC_CONFIG:
+        if key in overrides:
+            resolved[key] = overrides[key]
+    return resolved
+
 
 class SACAgent:
     """Continuous-control SAC agent with twin critics."""
@@ -32,11 +60,12 @@ class SACAgent:
         self.device = device
         self.observation_dim = int(observation_dim)
         self.action_dim = int(action_dim)
+        resolved_cfg = build_sac_config(algorithm_cfg)
 
         hidden_sizes = model_cfg.get("hidden_sizes", [256, 256])
         activation = str(model_cfg.get("activation", "tanh"))
-        self.log_std_min = float(algorithm_cfg.get("log_std_min", -5.0))
-        self.log_std_max = float(algorithm_cfg.get("log_std_max", 2.0))
+        self.log_std_min = float(resolved_cfg["log_std_min"])
+        self.log_std_max = float(resolved_cfg["log_std_max"])
 
         self.actor = MLP(
             input_dim=self.observation_dim,
@@ -75,11 +104,11 @@ class SACAgent:
         self.target_critic_2.eval()
 
         self.gamma = float(algorithm_cfg.get("gamma", 0.99))
-        self.tau = float(algorithm_cfg.get("tau", 0.005))
+        self.tau = float(resolved_cfg["tau"])
 
-        actor_lr = float(algorithm_cfg.get("actor_lr", 3.0e-4))
-        critic_lr = float(algorithm_cfg.get("critic_lr", 3.0e-4))
-        alpha_lr = float(algorithm_cfg.get("alpha_lr", 3.0e-4))
+        actor_lr = float(resolved_cfg["actor_lr"])
+        critic_lr = float(resolved_cfg["critic_lr"])
+        alpha_lr = float(resolved_cfg["alpha_lr"])
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_1_optimizer = torch.optim.Adam(
@@ -89,7 +118,7 @@ class SACAgent:
             self.critic_2.parameters(), lr=critic_lr
         )
 
-        alpha_init = float(algorithm_cfg.get("alpha_init", 0.2))
+        alpha_init = float(resolved_cfg["alpha_init"])
         self.log_alpha = torch.tensor(
             np.log(alpha_init),
             dtype=torch.float32,
@@ -98,7 +127,7 @@ class SACAgent:
         )
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=alpha_lr)
 
-        target_entropy = algorithm_cfg.get("target_entropy", "auto")
+        target_entropy = resolved_cfg["target_entropy"]
         if isinstance(target_entropy, str) and target_entropy.lower() == "auto":
             self.target_entropy = -float(self.action_dim)
         else:

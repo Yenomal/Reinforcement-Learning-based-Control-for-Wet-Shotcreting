@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         type=str,
         default=None,
-        help="Optional checkpoint override such as best.pt or final.pt.",
+        help="Optional checkpoint override, typically final.pt.",
     )
     parser.add_argument(
         "--config",

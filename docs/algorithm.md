@@ -268,7 +268,7 @@ pi(a|s) = Normal(mean(s), std)
 
 ### PPO 的 value 处理
 
-当前实现有一个比较值得注意的细节：`value target normalization`。
+当前实现保留了 `value target normalization` 的能力，但默认配置已经关闭。
 
 代码中实现了 `RunningValueNormalizer`，会维护：
 
@@ -284,7 +284,7 @@ pi(a|s) = Normal(mean(s), std)
 
 这一点的目的，是减轻 reward 量级变化带来的 value training 不稳定。
 
-结合你当前 reward 中存在一个较大的 `success_reward = 80`，这套 value normalization 是有实际意义的。
+当前默认 reward 已经比较克制，因此这套机制先作为可选项保留，而不再作为默认配置。
 
 ### PPO 的 advantage 计算
 
@@ -353,7 +353,7 @@ L_policy = -mean(min(ratio * A, clip(ratio, 1-eps, 1+eps) * A))
 当前配置中：
 
 - `value_coef = 0.5`
-- `normalize_value_targets = true`
+- `normalize_value_targets = false`
 
 ### PPO 的 entropy bonus
 
@@ -419,13 +419,9 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 
 会保存：
 
-- `best.pt`
-- `latest.pt`
 - `final.pt`
 - `metrics.csv`
 - `training_curves.html`
-
-这里的 `best.pt` 是按 `mean_reward` 最优保存的。
 
 ### PPO 的评估方式
 
