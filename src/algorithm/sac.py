@@ -24,7 +24,7 @@ DEFAULT_SAC_CONFIG: Dict[str, Any] = {
     "tau": 0.005,
     "batch_size": 256,
     "buffer_size": 1_000_000,
-    "learning_starts": 800,
+    "learning_starts": 100,
     "updates_per_step": 1,
     "log_interval_steps": 2000,
     "alpha_init": 1.0,

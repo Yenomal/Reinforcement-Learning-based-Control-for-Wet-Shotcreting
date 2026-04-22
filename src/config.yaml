@@ -35,7 +35,7 @@ rl:
   env_name: math_env         # RL 环境名称
   max_episode_steps: 200      # 单局最大步数
   initial_configuration_deg: [0.0, 0.0, 0.0, 0.0] # 起点固定关节角
-  goal_tolerance: 0.5       # 3D 欧氏距离下的到达阈值
+  goal_tolerance: 0.1       # 3D 欧氏距离下的到达阈值
   max_joint_delta_deg: [4.0, 4.0, 4.0, 4.0] # 每步允许的最大关节变化量
   workspace_margin: 0.25     # FK 采样工作空间边界扩展
   progress_reward_weight: 2.0 # k in r_t = k * [phi(d_t) - phi(d_{t+1})]
@@ -68,6 +68,8 @@ sac:
 train:
   seed: 42                   # 训练随机种子
   device: cuda               # 训练设备，若无 CUDA 会自动回退到 CPU
+  env_backend: torch         # 训练环境后端：classic 或 torch
+  num_envs: 256              # torch 后端下的批量环境数量
   log_interval: 1            # 终端打印间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度
