@@ -35,7 +35,7 @@ rl:
   env_name: math_env         # RL 环境名称
   max_episode_steps: 200      # 单局最大步数
   initial_configuration_deg: [0.0, 0.0, 0.0, 0.0] # 起点固定关节角
-  goal_tolerance: 0.1       # 3D 欧氏距离下的到达阈值
+  goal_tolerance: 0.5       # 3D 欧氏距离下的到达阈值
   max_joint_delta_deg: [4.0, 4.0, 4.0, 4.0] # 每步允许的最大关节变化量
   workspace_margin: 0.25     # FK 采样工作空间边界扩展
   progress_reward_weight: 2.0 # k in r_t = k * [phi(d_t) - phi(d_{t+1})]
@@ -62,12 +62,15 @@ ppo:
 
 # SAC 专有参数
 sac:
-  total_steps: 200000    # 总环境步数，其余超参数见 src/algorithm/sac.py
+  total_steps: 200000    # 总环境交互步数（所有并行环境合计），其余超参数见 src/algorithm/sac.py
 
 # 训练入口参数
 train:
   seed: 42                   # 训练随机种子
-  device: cpu                # 训练设备
+  device: cuda               # 训练设备，若无 CUDA 会自动回退到 CPU
+  num_envs: 8                # 并行环境数量；PPO/SAC 都按这一数量并行采样
+  env_backend: subproc       # 并行环境后端：sync 或 subproc
+  env_start_method: spawn    # 多进程启动方式，默认使用 spawn
   log_interval: 1            # 终端打印间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度

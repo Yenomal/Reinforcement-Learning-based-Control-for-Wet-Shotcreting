@@ -20,7 +20,7 @@ from .algorithm.ppo import PPOAgent, build_ppo_config
 from .algorithm.sac import SACAgent, build_sac_config
 from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
 from .config import load_config
-from .rl_env.math_env import MathEnv
+from .rl_env.vector_env import BaseVectorEnv, build_vector_env
 
 
 def parse_args() -> argparse.Namespace:
@@ -203,7 +203,7 @@ def save_training_curves(run_dir: Path, history: List[Dict[str, Any]]) -> None:
 
 
 def collect_on_policy_rollout(
-    env: MathEnv,
+    env: BaseVectorEnv,
     agent: PPOAgent,
     rollout_steps: int,
     device: torch.device,
@@ -213,36 +213,33 @@ def collect_on_policy_rollout(
     buffer = OnPolicyBuffer(capacity=rollout_steps)
     episode_summaries: List[Dict[str, Any]] = []
     current_observation = observation
-    last_transition_done = False
+    last_transition_done = np.zeros(env.num_envs, dtype=np.float32)
 
     for _ in range(rollout_steps):
         obs_tensor = torch.as_tensor(
             current_observation,
             dtype=torch.float32,
             device=device,
-        ).unsqueeze(0)
+        )
         action_tensor, log_prob_tensor, value_tensor = agent.act(obs_tensor)
-        action = action_tensor.squeeze(0).cpu().numpy().astype(np.float32)
+        action = action_tensor.cpu().numpy().astype(np.float32)
 
-        next_observation, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
+        next_observation, rewards, terminated, truncated, infos = env.step(action)
+        done = np.logical_or(terminated, truncated)
 
         buffer.add(
             observation=current_observation,
             action=action,
-            log_prob=float(log_prob_tensor.squeeze(0).cpu().item()),
-            reward=float(reward),
+            log_prob=log_prob_tensor.cpu().numpy().astype(np.float32),
+            reward=rewards.astype(np.float32),
             done=done,
-            value=float(value_tensor.squeeze(0).cpu().item()),
+            value=value_tensor.cpu().numpy().astype(np.float32),
         )
-        last_transition_done = done
-
-        if done:
-            if "episode" in info:
-                episode_summaries.append(info["episode"])
-            current_observation, _ = env.reset()
-        else:
-            current_observation = next_observation
+        last_transition_done = done.astype(np.float32)
+        current_observation = next_observation
+        episode_summaries.extend(
+            info["episode"] for info in infos if "episode" in info
+        )
 
     buffer.finalize(
         next_observation=current_observation,
@@ -309,7 +306,7 @@ def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
 
 
 def run_ppo_training(
-    env: MathEnv,
+    env: BaseVectorEnv,
     agent: PPOAgent,
     config: Dict[str, Any],
     run_dir: Path,
@@ -322,7 +319,9 @@ def run_ppo_training(
     ppo_cfg = build_ppo_config(config.get("ppo", {}))
 
     total_updates = int(config.get("ppo", {}).get("total_updates", 200))
-    rollout_steps = int(ppo_cfg["rollout_steps"])
+    target_rollout_steps = int(ppo_cfg["rollout_steps"])
+    rollout_steps = max(target_rollout_steps // env.num_envs, 1)
+    rollout_batch_size = rollout_steps * env.num_envs
     log_interval = int(train_cfg.get("log_interval", 1))
 
     if total_updates <= 0:
@@ -338,9 +337,11 @@ def run_ppo_training(
     print(f"Device: {device}")
     print(f"Observation dim: {env.observation_dim}")
     print(f"Action dim: {env.action_dim}")
+    print(f"Num envs: {env.num_envs}")
     print(f"Total updates: {total_updates}")
     print(f"Resume from update: {start_progress}")
-    print(f"Rollout steps: {rollout_steps}")
+    print(f"Rollout steps per env: {rollout_steps}")
+    print(f"Effective rollout batch size: {rollout_batch_size}")
 
     for update in range(start_progress + 1, total_updates + 1):
         batch, observation, episode_summaries = collect_on_policy_rollout(
@@ -366,7 +367,7 @@ def run_ppo_training(
 
 
 def run_sac_training(
-    env: MathEnv,
+    env: BaseVectorEnv,
     agent: SACAgent,
     config: Dict[str, Any],
     run_dir: Path,
@@ -409,53 +410,68 @@ def run_sac_training(
     print(f"Device: {device}")
     print(f"Observation dim: {env.observation_dim}")
     print(f"Action dim: {env.action_dim}")
+    print(f"Num envs: {env.num_envs}")
     print(f"Total steps: {total_steps}")
     print(f"Resume from step: {start_progress}")
     print(f"Replay buffer size: {buffer_size}")
 
-    for step in range(start_progress + 1, total_steps + 1):
-        if step < learning_starts:
-            action = np.random.uniform(-1.0, 1.0, size=env.action_dim).astype(np.float32)
+    progress = int(start_progress)
+    next_log_step = (
+        ((progress // log_interval_steps) + 1) * log_interval_steps
+        if log_interval_steps > 0
+        else total_steps
+    )
+
+    while progress < total_steps:
+        if progress < learning_starts:
+            action = np.random.uniform(
+                -1.0, 1.0, size=(env.num_envs, env.action_dim)
+            ).astype(np.float32)
         else:
             obs_tensor = torch.as_tensor(
                 observation,
                 dtype=torch.float32,
                 device=device,
-            ).unsqueeze(0)
-            action = agent.act(obs_tensor).squeeze(0).cpu().numpy().astype(np.float32)
+            )
+            action = agent.act(obs_tensor).cpu().numpy().astype(np.float32)
 
-        next_observation, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
+        next_observation, rewards, terminated, truncated, infos = env.step(action)
+        done = np.logical_or(terminated, truncated)
 
-        replay_buffer.add(
-            observation=observation,
-            action=action,
-            reward=float(reward),
-            next_observation=next_observation,
-            done=done,
+        replay_buffer.add_batch(
+            observations=observation,
+            actions=action,
+            rewards=rewards,
+            next_observations=next_observation,
+            dones=done.astype(np.float32),
         )
+        progress += env.num_envs
 
-        if step >= learning_starts and len(replay_buffer) >= batch_size:
-            for _ in range(updates_per_step):
+        if progress >= learning_starts and len(replay_buffer) >= batch_size:
+            for _ in range(updates_per_step * env.num_envs):
                 batch: ReplayBatch = replay_buffer.sample(batch_size=batch_size, device=device)
                 latest_metrics = agent.update(batch)
 
-        if done:
-            if "episode" in info:
-                recent_episodes.append(info["episode"])
-            observation, _ = env.reset()
-        else:
-            observation = next_observation
+        recent_episodes.extend(
+            info["episode"] for info in infos if "episode" in info
+        )
+        observation = next_observation
 
-        should_log = step % log_interval_steps == 0 or step == total_steps
+        current_progress = min(progress, total_steps)
+        should_log = current_progress >= total_steps or (
+            log_interval_steps > 0 and current_progress >= next_log_step
+        )
         if should_log:
-            metrics = build_metrics(step, recent_episodes, latest_metrics)
+            metrics = build_metrics(current_progress, recent_episodes, latest_metrics)
             metrics_history.append(metrics)
 
             if log_interval_steps > 0:
                 log_metrics("Step", metrics)
 
             recent_episodes = []
+            if log_interval_steps > 0:
+                while next_log_step <= current_progress:
+                    next_log_step += log_interval_steps
 
     write_metrics_csv(run_dir, metrics_history)
     save_training_curves(run_dir, metrics_history)
@@ -465,7 +481,7 @@ def run_sac_training(
         "final.pt",
         agent,
         config,
-        total_steps,
+        min(progress, total_steps),
         final_metrics,
         extra_state={"replay_buffer": replay_buffer.state_dict()},
     )
@@ -498,90 +514,101 @@ def main() -> None:
     torch.manual_seed(seed)
     device = build_device(str(train_cfg.get("device", "cpu")))
 
-    env = MathEnv(
+    num_envs = int(train_cfg.get("num_envs", 1))
+    env_backend = str(train_cfg.get("env_backend", "sync"))
+    env_start_method = str(train_cfg.get("env_start_method", "spawn"))
+    env = build_vector_env(
+        num_envs=num_envs,
+        backend=env_backend,
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
         robot_cfg=robot_cfg,
         algorithm_cfg=algorithm_cfg,
         disturbance_cfg=disturbance_cfg,
+        start_method=env_start_method,
     )
     run_dir = build_run_dir(config)
-    if resume_checkpoint is not None:
-        resume_payload = torch.load(resume_checkpoint, map_location=device)
-        if resume_training:
-            start_progress = int(resume_payload.get("progress", 0))
-            metrics_history = load_metrics_csv(resume_checkpoint.parent)
+    try:
+        if resume_checkpoint is not None:
+            resume_payload = torch.load(resume_checkpoint, map_location=device)
+            if resume_training:
+                start_progress = int(resume_payload.get("progress", 0))
+                metrics_history = load_metrics_csv(resume_checkpoint.parent)
 
-    with (run_dir / "config.yaml").open("w", encoding="utf-8") as file:
-        yaml.safe_dump(config, file, sort_keys=False, allow_unicode=True)
+        with (run_dir / "config.yaml").open("w", encoding="utf-8") as file:
+            yaml.safe_dump(config, file, sort_keys=False, allow_unicode=True)
 
-    if resume_checkpoint is not None:
-        if resume_training:
-            print(f"Resume training from checkpoint: {resume_checkpoint}")
-            print(f"Resume progress: {start_progress}")
+        if resume_checkpoint is not None:
+            if resume_training:
+                print(f"Resume training from checkpoint: {resume_checkpoint}")
+                print(f"Resume progress: {start_progress}")
+            else:
+                print(f"Initialize from pretrained checkpoint: {resume_checkpoint}")
+                print("Training progress will restart from 0.")
+        print(f"Saving outputs to: {run_dir}")
+        print(f"Env backend: {env_backend}")
+        print(f"Num envs: {env.num_envs}")
+
+        if algorithm_name == "ppo":
+            ppo_cfg = build_ppo_config(config.get("ppo", {}))
+            ppo_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+            agent = PPOAgent(
+                observation_dim=env.observation_dim,
+                action_dim=env.action_dim,
+                model_cfg=model_cfg,
+                algorithm_cfg=ppo_cfg,
+                device=device,
+            )
+            if resume_payload is not None and resume_training:
+                agent.load_training_state(resume_payload["state_dict"])
+            elif resume_payload is not None:
+                agent.load_policy_state(resume_payload["state_dict"])
+            run_ppo_training(
+                env=env,
+                agent=agent,
+                config=config,
+                run_dir=run_dir,
+                device=device,
+                start_progress=start_progress,
+                metrics_history=metrics_history,
+            )
+        elif algorithm_name == "sac":
+            sac_cfg = build_sac_config(config.get("sac", {}))
+            sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+            agent = SACAgent(
+                observation_dim=env.observation_dim,
+                action_dim=env.action_dim,
+                model_cfg=model_cfg,
+                algorithm_cfg=sac_cfg,
+                device=device,
+            )
+            replay_buffer = ReplayBuffer(
+                capacity=int(sac_cfg.get("buffer_size", 100000)),
+                observation_dim=env.observation_dim,
+                action_dim=env.action_dim,
+            )
+            if resume_payload is not None and resume_training:
+                agent.load_training_state(resume_payload["state_dict"])
+                extra_state = resume_payload.get("extra_state", {})
+                if "replay_buffer" in extra_state:
+                    replay_buffer.load_state_dict(extra_state["replay_buffer"])
+            elif resume_payload is not None:
+                agent.load_policy_state(resume_payload["state_dict"])
+            run_sac_training(
+                env=env,
+                agent=agent,
+                config=config,
+                run_dir=run_dir,
+                device=device,
+                start_progress=start_progress,
+                metrics_history=metrics_history,
+                replay_buffer=replay_buffer,
+            )
         else:
-            print(f"Initialize from pretrained checkpoint: {resume_checkpoint}")
-            print("Training progress will restart from 0.")
-    print(f"Saving outputs to: {run_dir}")
-
-    if algorithm_name == "ppo":
-        ppo_cfg = build_ppo_config(config.get("ppo", {}))
-        ppo_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
-        agent = PPOAgent(
-            observation_dim=env.observation_dim,
-            action_dim=env.action_dim,
-            model_cfg=model_cfg,
-            algorithm_cfg=ppo_cfg,
-            device=device,
-        )
-        if resume_payload is not None and resume_training:
-            agent.load_training_state(resume_payload["state_dict"])
-        elif resume_payload is not None:
-            agent.load_policy_state(resume_payload["state_dict"])
-        run_ppo_training(
-            env=env,
-            agent=agent,
-            config=config,
-            run_dir=run_dir,
-            device=device,
-            start_progress=start_progress,
-            metrics_history=metrics_history,
-        )
-    elif algorithm_name == "sac":
-        sac_cfg = build_sac_config(config.get("sac", {}))
-        sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
-        agent = SACAgent(
-            observation_dim=env.observation_dim,
-            action_dim=env.action_dim,
-            model_cfg=model_cfg,
-            algorithm_cfg=sac_cfg,
-            device=device,
-        )
-        replay_buffer = ReplayBuffer(
-            capacity=int(sac_cfg.get("buffer_size", 100000)),
-            observation_dim=env.observation_dim,
-            action_dim=env.action_dim,
-        )
-        if resume_payload is not None and resume_training:
-            agent.load_training_state(resume_payload["state_dict"])
-            extra_state = resume_payload.get("extra_state", {})
-            if "replay_buffer" in extra_state:
-                replay_buffer.load_state_dict(extra_state["replay_buffer"])
-        elif resume_payload is not None:
-            agent.load_policy_state(resume_payload["state_dict"])
-        run_sac_training(
-            env=env,
-            agent=agent,
-            config=config,
-            run_dir=run_dir,
-            device=device,
-            start_progress=start_progress,
-            metrics_history=metrics_history,
-            replay_buffer=replay_buffer,
-        )
-    else:
-        raise ValueError(f"Unsupported algorithm: {algorithm_name}")
+            raise ValueError(f"Unsupported algorithm: {algorithm_name}")
+    finally:
+        env.close()
 
 
 if __name__ == "__main__":
