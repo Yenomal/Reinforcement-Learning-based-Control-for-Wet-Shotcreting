@@ -68,6 +68,8 @@ sac:
 train:
   seed: 42                   # 训练随机种子
   device: cpu                # 训练设备
+  lr_schedule: cosine        # 学习率调度：none 或 cosine
+  lr_min_ratio: 0.5          # 余弦退火的最低学习率比例
   log_interval: 1            # 终端打印间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度

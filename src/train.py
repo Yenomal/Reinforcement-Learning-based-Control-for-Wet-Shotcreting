@@ -16,6 +16,8 @@ import torch
 import yaml
 from plotly.subplots import make_subplots
 
+from .algorithm.lr_schedule import OptimizerLRScheduler
+from .algorithm.ppo import PPOAgent, build_ppo_config
 from .algorithm.ppo import PPOAgent, build_ppo_config
 from .algorithm.sac import SACAgent, build_sac_config
 from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
@@ -294,10 +296,9 @@ def build_metrics(
             metrics[key] = value
     return metrics
 
-
 def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
     """Print a compact metrics line."""
-    print(
+    message = (
         f"[{prefix} {metrics['progress']:05d}] "
         f"reward={metrics['mean_reward']:.3f} "
         f"length={metrics['mean_length']:.2f} "
@@ -306,6 +307,15 @@ def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
         f"policy_loss={metrics['policy_loss']:.4f} "
         f"value_loss={metrics['value_loss']:.4f}"
     )
+    if "lr" in metrics:
+        message += f" lr={metrics['lr']:.6g}"
+    if "actor_lr" in metrics:
+        message += f" actor_lr={metrics['actor_lr']:.6g}"
+    if "critic_lr" in metrics:
+        message += f" critic_lr={metrics['critic_lr']:.6g}"
+    if "alpha_lr" in metrics:
+        message += f" alpha_lr={metrics['alpha_lr']:.6g}"
+    print(message)
 
 
 def run_ppo_training(
@@ -324,7 +334,13 @@ def run_ppo_training(
     total_updates = int(config.get("ppo", {}).get("total_updates", 200))
     rollout_steps = int(ppo_cfg["rollout_steps"])
     log_interval = int(train_cfg.get("log_interval", 1))
-
+    lr_scheduler = OptimizerLRScheduler(
+        {"lr": agent.optimizer},
+        total_progress=total_updates,
+        schedule=str(train_cfg.get("lr_schedule", "none")),
+        min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
+    )
+        
     if total_updates <= 0:
         raise ValueError("ppo.total_updates must be a positive integer.")
 
@@ -343,6 +359,7 @@ def run_ppo_training(
     print(f"Rollout steps: {rollout_steps}")
 
     for update in range(start_progress + 1, total_updates + 1):
+        lr_metrics = lr_scheduler.step(update - 1)
         batch, observation, episode_summaries = collect_on_policy_rollout(
             env=env,
             agent=agent,
@@ -351,6 +368,7 @@ def run_ppo_training(
             observation=observation,
         )
         update_metrics = agent.update(batch)
+        update_metrics.update(lr_metrics)
         metrics = build_metrics(update, episode_summaries, update_metrics)
         metrics_history.append(metrics)
 
@@ -385,7 +403,17 @@ def run_sac_training(
     learning_starts = int(sac_cfg["learning_starts"])
     updates_per_step = int(sac_cfg["updates_per_step"])
     log_interval_steps = int(sac_cfg["log_interval_steps"])
-
+    lr_scheduler = OptimizerLRScheduler(
+        {
+            "actor_lr": agent.actor_optimizer,
+            "critic_lr": [agent.critic_1_optimizer, agent.critic_2_optimizer],
+            "alpha_lr": agent.alpha_optimizer,
+        },
+        total_progress=total_steps,
+        schedule=str(train_cfg.get("lr_schedule", "none")),
+        min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
+    )
+    
     if total_steps <= 0:
         raise ValueError("sac.total_steps must be a positive integer.")
 
@@ -401,6 +429,7 @@ def run_sac_training(
         "policy_loss": float("nan"),
         "value_loss": float("nan"),
     }
+    latest_metrics.update(lr_scheduler.step(max(start_progress, 0)))
 
     print("=" * 72)
     print("SAC Training On MathEnv")
@@ -414,6 +443,7 @@ def run_sac_training(
     print(f"Replay buffer size: {buffer_size}")
 
     for step in range(start_progress + 1, total_steps + 1):
+        latest_metrics.update(lr_scheduler.step(step - 1))
         if step < learning_starts:
             action = np.random.uniform(-1.0, 1.0, size=env.action_dim).astype(np.float32)
         else:
@@ -439,6 +469,7 @@ def run_sac_training(
             for _ in range(updates_per_step):
                 batch: ReplayBatch = replay_buffer.sample(batch_size=batch_size, device=device)
                 latest_metrics = agent.update(batch)
+                latest_metrics.update(lr_scheduler.step(step - 1))
 
         if done:
             if "episode" in info:
