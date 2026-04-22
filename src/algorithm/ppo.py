@@ -241,10 +241,10 @@ class PPOAgent:
         values = batch.values
 
         advantages = torch.zeros_like(rewards, device=self.device)
-        last_gae = torch.zeros(rewards.shape[1], device=self.device)
+        last_gae = torch.zeros(1, device=self.device)
 
-        next_value = self.value(batch.next_observation)
-        next_done = batch.next_done
+        next_value = self.value(batch.next_observation.unsqueeze(0)).squeeze(0)
+        next_done = batch.next_done.squeeze(0)
 
         for step in reversed(range(rewards.shape[0])):
             if step == rewards.shape[0] - 1:
@@ -275,15 +275,6 @@ class PPOAgent:
         if self.normalize_value_targets:
             self.value_normalizer.update(returns)
             normalized_returns = self.value_normalizer.normalize(returns)
-
-        observation_dim = observations.shape[-1]
-        action_dim = actions.shape[-1]
-        observations = observations.reshape(-1, observation_dim)
-        actions = actions.reshape(-1, action_dim)
-        old_log_probs = old_log_probs.reshape(-1)
-        returns = returns.reshape(-1)
-        advantages = advantages.reshape(-1)
-        normalized_returns = normalized_returns.reshape(-1)
 
         batch_size = observations.shape[0]
         indices = torch.arange(batch_size, device=self.device)

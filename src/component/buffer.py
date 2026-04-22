@@ -67,24 +67,24 @@ class OnPolicyBuffer(Buffer):
         self,
         observation: np.ndarray,
         action: np.ndarray,
-        log_prob: np.ndarray,
-        reward: np.ndarray,
-        done: np.ndarray,
-        value: np.ndarray,
+        log_prob: float,
+        reward: float,
+        done: bool,
+        value: float,
     ) -> None:
         if len(self) >= self.capacity:
             raise RuntimeError("OnPolicyBuffer is full. Call reset() before adding more data.")
 
         self.observations.append(np.asarray(observation, dtype=np.float32).copy())
         self.actions.append(np.asarray(action, dtype=np.float32).copy())
-        self.log_probs.append(np.asarray(log_prob, dtype=np.float32).copy())
-        self.rewards.append(np.asarray(reward, dtype=np.float32).copy())
-        self.dones.append(np.asarray(done, dtype=np.float32).copy())
-        self.values.append(np.asarray(value, dtype=np.float32).copy())
+        self.log_probs.append(float(log_prob))
+        self.rewards.append(float(reward))
+        self.dones.append(float(done))
+        self.values.append(float(value))
 
-    def finalize(self, next_observation: np.ndarray, next_done: np.ndarray) -> None:
+    def finalize(self, next_observation: np.ndarray, next_done: bool) -> None:
         self.next_observation = np.asarray(next_observation, dtype=np.float32).copy()
-        self.next_done = np.asarray(next_done, dtype=np.float32).copy()
+        self.next_done = float(next_done)
 
     def to_batch(self, device: torch.device) -> OnPolicyBatch:
         if len(self) == 0:
@@ -129,7 +129,7 @@ class OnPolicyBuffer(Buffer):
                 device=device,
             ),
             next_done=torch.as_tensor(
-                self.next_done,
+                [self.next_done],
                 dtype=torch.float32,
                 device=device,
             ),
@@ -173,54 +173,16 @@ class ReplayBuffer(Buffer):
         next_observation: np.ndarray,
         done: bool,
     ) -> None:
-        self.add_batch(
-            observations=np.asarray(observation, dtype=np.float32).reshape(
-                1, self.observation_dim
-            ),
-            actions=np.asarray(action, dtype=np.float32).reshape(1, self.action_dim),
-            rewards=np.asarray([reward], dtype=np.float32),
-            next_observations=np.asarray(next_observation, dtype=np.float32).reshape(
-                1, self.observation_dim
-            ),
-            dones=np.asarray([done], dtype=np.float32),
+        self.observations[self.position] = np.asarray(observation, dtype=np.float32)
+        self.actions[self.position] = np.asarray(action, dtype=np.float32)
+        self.rewards[self.position] = float(reward)
+        self.next_observations[self.position] = np.asarray(
+            next_observation, dtype=np.float32
         )
+        self.dones[self.position] = float(done)
 
-    def add_batch(
-        self,
-        observations: np.ndarray,
-        actions: np.ndarray,
-        rewards: np.ndarray,
-        next_observations: np.ndarray,
-        dones: np.ndarray,
-    ) -> None:
-        observations = np.asarray(observations, dtype=np.float32).reshape(
-            -1, self.observation_dim
-        )
-        actions = np.asarray(actions, dtype=np.float32).reshape(-1, self.action_dim)
-        rewards = np.asarray(rewards, dtype=np.float32).reshape(-1)
-        next_observations = np.asarray(next_observations, dtype=np.float32).reshape(
-            -1, self.observation_dim
-        )
-        dones = np.asarray(dones, dtype=np.float32).reshape(-1)
-
-        batch_size = observations.shape[0]
-        if batch_size >= self.capacity:
-            observations = observations[-self.capacity :]
-            actions = actions[-self.capacity :]
-            rewards = rewards[-self.capacity :]
-            next_observations = next_observations[-self.capacity :]
-            dones = dones[-self.capacity :]
-            batch_size = self.capacity
-
-        indices = (self.position + np.arange(batch_size)) % self.capacity
-        self.observations[indices] = observations
-        self.actions[indices] = actions
-        self.rewards[indices] = rewards
-        self.next_observations[indices] = next_observations
-        self.dones[indices] = dones
-
-        self.position = (self.position + batch_size) % self.capacity
-        self.size = min(self.size + batch_size, self.capacity)
+        self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int, device: torch.device) -> ReplayBatch:
         if len(self) < batch_size:

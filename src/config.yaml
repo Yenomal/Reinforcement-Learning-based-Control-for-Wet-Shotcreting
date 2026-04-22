@@ -53,7 +53,7 @@ model:
 
 # 算法公共参数
 algorithm:
-  name: sac   # 当前算法名称
+  name: ppo   # 当前算法名称
   gamma: 0.99 # 折扣因子
 
 # PPO 专有参数
@@ -62,15 +62,12 @@ ppo:
 
 # SAC 专有参数
 sac:
-  total_steps: 200000    # 总环境交互步数（所有并行环境合计），其余超参数见 src/algorithm/sac.py
+  total_steps: 200000    # 总环境步数，其余超参数见 src/algorithm/sac.py
 
 # 训练入口参数
 train:
   seed: 42                   # 训练随机种子
   device: cuda               # 训练设备，若无 CUDA 会自动回退到 CPU
-  num_envs: 8                # 并行环境数量；PPO/SAC 都按这一数量并行采样
-  env_backend: subproc       # 并行环境后端：sync 或 subproc
-  env_start_method: spawn    # 多进程启动方式，默认使用 spawn
   log_interval: 1            # 终端打印间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度
