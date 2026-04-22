@@ -17,6 +17,7 @@ import torch
 import yaml
 from plotly.subplots import make_subplots
 
+from .algorithm.lr_schedule import OptimizerLRScheduler
 from .algorithm.ppo import PPOAgent, build_ppo_config
 from .algorithm.sac import SACAgent, build_sac_config
 from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
@@ -329,6 +330,14 @@ def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
     )
     if "env_steps_per_sec" in metrics:
         message += f" fps={metrics['env_steps_per_sec']:.1f}"
+    if "lr" in metrics:
+        message += f" lr={_format_metric(metrics['lr'], 6)}"
+    if "actor_lr" in metrics:
+        message += f" actor_lr={_format_metric(metrics['actor_lr'], 6)}"
+    if "critic_lr" in metrics:
+        message += f" critic_lr={_format_metric(metrics['critic_lr'], 6)}"
+    if "alpha_lr" in metrics:
+        message += f" alpha_lr={_format_metric(metrics['alpha_lr'], 6)}"
     print(message)
 
 
@@ -350,6 +359,12 @@ def run_ppo_training(
     rollout_steps = max(target_rollout_steps // env.num_envs, 1)
     rollout_batch_size = rollout_steps * env.num_envs
     log_interval = int(train_cfg.get("log_interval", 1))
+    lr_scheduler = OptimizerLRScheduler(
+        {"lr": agent.optimizer},
+        total_progress=total_updates,
+        schedule=str(train_cfg.get("lr_schedule", "none")),
+        min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
+    )
 
     if total_updates <= 0:
         raise ValueError("ppo.total_updates must be a positive integer.")
@@ -373,6 +388,7 @@ def run_ppo_training(
     train_start_time = perf_counter()
 
     for update in range(start_progress + 1, total_updates + 1):
+        lr_metrics = lr_scheduler.step(update - 1)
         batch, observation, episode_summaries = collect_on_policy_rollout(
             env=env,
             agent=agent,
@@ -381,6 +397,7 @@ def run_ppo_training(
             observation=observation,
         )
         update_metrics = agent.update(batch)
+        update_metrics.update(lr_metrics)
         elapsed = max(perf_counter() - train_start_time, 1e-6)
         update_metrics["env_steps_per_sec"] = (update * rollout_batch_size) / elapsed
         rollout_metrics = {
@@ -426,6 +443,16 @@ def run_sac_training(
     learning_starts = int(sac_cfg["learning_starts"])
     updates_per_step = int(sac_cfg["updates_per_step"])
     log_interval_steps = int(sac_cfg["log_interval_steps"])
+    lr_scheduler = OptimizerLRScheduler(
+        {
+            "actor_lr": agent.actor_optimizer,
+            "critic_lr": [agent.critic_1_optimizer, agent.critic_2_optimizer],
+            "alpha_lr": agent.alpha_optimizer,
+        },
+        total_progress=total_steps,
+        schedule=str(train_cfg.get("lr_schedule", "none")),
+        min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
+    )
 
     if total_steps <= 0:
         raise ValueError("sac.total_steps must be a positive integer.")
@@ -443,6 +470,7 @@ def run_sac_training(
         "policy_loss": float("nan"),
         "value_loss": float("nan"),
     }
+    latest_metrics.update(lr_scheduler.step(max(start_progress, 0)))
     window_reward_sum = 0.0
     window_transition_count = 0
     window_done_count = 0
@@ -496,6 +524,8 @@ def run_sac_training(
             dones=done.to(dtype=torch.float32),
         )
         progress += env.num_envs
+        current_progress = min(progress, total_steps)
+        latest_metrics.update(lr_scheduler.step(current_progress))
         window_reward_sum += float(torch.as_tensor(rewards).sum().detach().cpu().item())
         window_transition_count += int(torch.as_tensor(rewards).numel())
         window_done_count += int(done.to(dtype=torch.int32).sum().detach().cpu().item())
@@ -508,7 +538,6 @@ def run_sac_training(
         observation = next_observation
         recent_episodes.extend(info["episode"] for info in infos if "episode" in info)
 
-        current_progress = min(progress, total_steps)
         should_log = current_progress >= total_steps or (
             log_interval_steps > 0 and current_progress >= next_log_step
         )
