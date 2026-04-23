@@ -226,7 +226,7 @@ SAC 当前采用：
 - `buffer_size = 1_000_000`
 - `learning_starts = 100`
 - `updates_per_step = 1`
-- `log_interval_steps = 2000`
+- `log_interval_steps = 65536`
 - `alpha_init = 1.0`
 - `target_entropy = auto`
 
@@ -242,13 +242,13 @@ SAC 是 off-policy：
 在 `torch` 后端下：
 
 - 一次环境步进会并行得到 `num_envs` 条 transition
-- 当前实现为了保持 update-to-data 比例，会执行：
+- 当前实现会在每次 batched 环境步进后执行固定次数的参数更新：
 
 ```text
-updates = updates_per_step * num_envs
+updates = updates_per_step
 ```
 
-也就是说，环境吞吐增加后，更新次数也随之提高。
+也就是说，`updates_per_step` 表示“每次 batched 采样轮次更新多少次”，不再随 `num_envs` 线性放大。
 
 ### 梯度裁剪
 

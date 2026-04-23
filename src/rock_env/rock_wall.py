@@ -12,9 +12,12 @@ This module only provides the environment geometry itself:
 It does not include any planner.
 """
 
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
+
+from ..rock_3D.tools.build_tunnel_environment import load_surface_grid
 
 try:
     from opensimplex import OpenSimplex
@@ -141,6 +144,38 @@ def clamp_uv(u: float, v: float) -> Tuple[float, float]:
     return u_clamped, v_clamped
 
 
+def _uv_to_grid_coordinates(
+    u: float,
+    v: float,
+    *,
+    rows: int,
+    cols: int,
+) -> tuple[float, float]:
+    u, v = clamp_uv(u, v)
+    row = 0.0 if rows <= 1 else (v - V_MIN) / max(V_MAX - V_MIN, 1e-8) * (rows - 1)
+    col = 0.0 if cols <= 1 else (u - U_MIN) / max(U_MAX - U_MIN, 1e-8) * (cols - 1)
+    return float(row), float(col)
+
+
+def _bilinear_sample(points_grid: np.ndarray, row: float, col: float) -> np.ndarray:
+    rows, cols = points_grid.shape[:2]
+    row0 = int(np.floor(row))
+    col0 = int(np.floor(col))
+    row1 = min(row0 + 1, rows - 1)
+    col1 = min(col0 + 1, cols - 1)
+    row_weight = float(row - row0)
+    col_weight = float(col - col0)
+
+    p00 = points_grid[row0, col0]
+    p01 = points_grid[row0, col1]
+    p10 = points_grid[row1, col0]
+    p11 = points_grid[row1, col1]
+
+    top = (1.0 - col_weight) * p00 + col_weight * p01
+    bottom = (1.0 - col_weight) * p10 + col_weight * p11
+    return ((1.0 - row_weight) * top + row_weight * bottom).astype(np.float32)
+
+
 def surface_radius(
     u: float,
     v: float,
@@ -189,6 +224,25 @@ def surface_point(
         [radius * np.cos(theta), radius * np.sin(theta), v],
         dtype=float,
     )
+
+
+def surface_point_from_environment(
+    rock_env: Dict[str, object],
+    u: float,
+    v: float,
+) -> np.ndarray:
+    """Query one surface point from either the analytic wall or a fixed HTML grid."""
+    if "noise_gen" in rock_env:
+        return surface_point(u, v, noise_gen=rock_env["noise_gen"])
+
+    points_grid = np.asarray(rock_env["points_grid"], dtype=np.float32)
+    row, col = _uv_to_grid_coordinates(
+        u,
+        v,
+        rows=int(points_grid.shape[0]),
+        cols=int(points_grid.shape[1]),
+    )
+    return _bilinear_sample(points_grid, row, col)
 
 
 def map_to_3d_cylinder(
@@ -305,6 +359,47 @@ def surface_normal(
     if np.dot(normal, radial) < 0:
         normal = -normal
     return normal
+
+
+def surface_normal_from_environment(
+    rock_env: Dict[str, object],
+    u: float,
+    v: float,
+    delta: float = DELTA,
+) -> np.ndarray:
+    """Estimate one surface normal from either the analytic wall or a fixed HTML grid."""
+    if "noise_gen" in rock_env:
+        return surface_normal(u, v, noise_gen=rock_env["noise_gen"], delta=delta)
+
+    u, v = clamp_uv(u, v)
+    u_minus, _ = clamp_uv(u - delta, v)
+    u_plus, _ = clamp_uv(u + delta, v)
+    _, v_minus = clamp_uv(u, v - delta)
+    _, v_plus = clamp_uv(u, v + delta)
+
+    point_u_minus = surface_point_from_environment(rock_env, u_minus, v)
+    point_u_plus = surface_point_from_environment(rock_env, u_plus, v)
+    point_v_minus = surface_point_from_environment(rock_env, u, v_minus)
+    point_v_plus = surface_point_from_environment(rock_env, u, v_plus)
+
+    du = max(u_plus - u_minus, 1e-8)
+    dv = max(v_plus - v_minus, 1e-8)
+    tangent_u = (point_u_plus - point_u_minus) / du
+    tangent_v = (point_v_plus - point_v_minus) / dv
+
+    normal = np.cross(tangent_u, tangent_v)
+    normal_norm = np.linalg.norm(normal)
+
+    theta = u / R_BASE
+    radial = np.array([np.cos(theta), np.sin(theta), 0.0], dtype=float)
+
+    if normal_norm <= 1e-10:
+        return radial.astype(np.float32)
+
+    normal = normal / normal_norm
+    if np.dot(normal, radial) < 0:
+        normal = -normal
+    return normal.astype(np.float32)
 
 
 def compute_surface_normals(
@@ -443,6 +538,57 @@ def generate_rock_environment(
     }
 
 
+def load_rock_environment_from_html(html_path: str | Path) -> Dict[str, object]:
+    """Load one fixed rock wall from a Plotly surface HTML exported by this project."""
+    path = Path(html_path)
+    grid = load_surface_grid(path)
+
+    x_grid = np.asarray(grid.x, dtype=np.float32).reshape(grid.rows, grid.cols)
+    y_grid = np.asarray(grid.y, dtype=np.float32).reshape(grid.rows, grid.cols)
+    z_grid = np.asarray(grid.z, dtype=np.float32).reshape(grid.rows, grid.cols)
+    radius_grid = np.asarray(grid.surfacecolor, dtype=np.float32).reshape(grid.rows, grid.cols)
+    points_grid = np.stack([x_grid, y_grid, z_grid], axis=-1).astype(np.float32)
+
+    theta = np.linspace(0.0, np.pi, grid.cols, dtype=np.float32)
+    v_values = np.linspace(V_MIN, V_MAX, grid.rows, dtype=np.float32)
+    theta_grid, v_grid = np.meshgrid(theta, v_values)
+    u_grid = R_BASE * theta_grid
+
+    return {
+        "source": "html",
+        "html_path": str(path),
+        "seed": None,
+        "points": points_grid.reshape(-1, 3).astype(np.float32),
+        "points_grid": points_grid,
+        "radius": radius_grid.reshape(-1).astype(np.float32),
+        "radius_grid": radius_grid,
+        "theta": theta_grid.reshape(-1),
+        "u": u_grid.reshape(-1),
+        "v": v_grid.reshape(-1),
+        "theta_grid": theta_grid,
+        "u_grid": u_grid,
+        "v_grid": v_grid,
+        "u_bounds": (U_MIN, U_MAX),
+        "v_bounds": (V_MIN, V_MAX),
+        "R_BASE": R_BASE,
+        "L_TUNNEL": L_TUNNEL,
+        "NOISE_AMPLITUDE": None,
+    }
+
+
+def build_training_rock_environment(env_cfg: Dict[str, object]) -> Dict[str, object]:
+    """Build the training wall from a fixed HTML path or from the procedural generator."""
+    html_path_raw = str(env_cfg.get("train_rock_env_html", "")).strip()
+    if html_path_raw:
+        return load_rock_environment_from_html(html_path_raw)
+
+    return generate_rock_environment(
+        n_theta=int(env_cfg.get("n_theta", N_THETA)),
+        n_z=int(env_cfg.get("n_z", N_Z)),
+        seed=int(env_cfg.get("seed", NOISE_SEED)),
+    )
+
+
 def generate_rock_wall(
     n_theta: int = N_THETA,
     n_z: int = N_Z,
@@ -481,13 +627,17 @@ __all__ = [
     "V_MIN",
     "clamp_uv",
     "compute_surface_normals",
+    "build_training_rock_environment",
     "generate_dense_rock_wall",
     "generate_rock_environment",
     "generate_rock_wall",
     "gravity_slump_vector",
+    "load_rock_environment_from_html",
     "map_to_3d_cylinder",
     "query_surface_state",
     "surface_normal",
+    "surface_normal_from_environment",
     "surface_point",
+    "surface_point_from_environment",
     "surface_radius",
 ]

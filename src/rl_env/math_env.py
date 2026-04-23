@@ -7,11 +7,13 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+import torch
 
 from ..component.disturbance import SensorNoise
 from ..component.planner import sample_planner_task_from_environment
+from ..component.reachability_map import build_or_load_reachability_map
 from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from ..rock_env.rock_wall import generate_rock_environment
+from ..rock_env.rock_wall import build_training_rock_environment
 
 
 def _as_float_array(value: Any, length: int) -> np.ndarray:
@@ -43,14 +45,22 @@ class MathEnv:
         self.algorithm_cfg = dict(algorithm_cfg or {})
         self.disturbance_cfg = dict(disturbance_cfg or {})
 
-        self.rock_env = generate_rock_environment(
-            n_theta=int(self.env_cfg.get("n_theta", 200)),
-            n_z=int(self.env_cfg.get("n_z", 100)),
-            seed=int(self.env_cfg.get("seed", 42)),
-        )
+        self.rock_env = build_training_rock_environment(self.env_cfg)
 
         self.kinematics: RobotKinematics = load_robot_kinematics(
             self.robot_cfg.get("kinematics_path")
+        )
+        reachability_device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+        self.reachability_map = build_or_load_reachability_map(
+            rock_env=self.rock_env,
+            kinematics=self.kinematics,
+            env_cfg=self.env_cfg,
+            planner_cfg=self.planner_cfg,
+            rl_cfg=self.rl_cfg,
+            robot_cfg=self.robot_cfg,
+            device=reachability_device,
         )
         workspace_padding = float(self.rl_cfg.get("workspace_margin", 0.25))
         self.point_lower, self.point_upper = self.kinematics.estimate_workspace_bounds(
@@ -68,6 +78,7 @@ class MathEnv:
         self.max_joint_delta = np.deg2rad(
             _as_float_array(max_joint_delta_deg, dof)
         ).astype(np.float32)
+        self.action_scale_ratio = 1.0
 
         self.max_episode_steps = int(self.rl_cfg.get("max_episode_steps", 200))
         self.goal_tolerance = float(self.rl_cfg.get("goal_tolerance", 0.2))
@@ -113,6 +124,7 @@ class MathEnv:
             kinematics=self.kinematics,
             planner_cfg=self.planner_cfg,
             rl_cfg=self.rl_cfg,
+            reachability_map=self.reachability_map,
             seed=sampled_seed,
         )
 
@@ -149,7 +161,8 @@ class MathEnv:
         # is only a safety guard for external callers or numerical spillover.
         bounded_joint_delta = np.clip(normalized_joint_delta, -1.0, 1.0)
 
-        proposed_q = self.current_q + bounded_joint_delta * self.max_joint_delta
+        effective_max_joint_delta = self.max_joint_delta * float(self.action_scale_ratio)
+        proposed_q = self.current_q + bounded_joint_delta * effective_max_joint_delta
         clipped_q = self.kinematics.clip_configuration(proposed_q)
         boundary_hit = not np.allclose(proposed_q, clipped_q)
 
@@ -186,8 +199,15 @@ class MathEnv:
             "previous_phi": previous_phi,
             "current_phi": current_phi,
             "boundary_hit": float(boundary_hit),
+            "action_scale_ratio": float(self.action_scale_ratio),
         }
         return observation, float(reward), terminated, truncated, info
+
+    def set_action_scale_ratio(self, ratio: float) -> None:
+        self.action_scale_ratio = float(max(ratio, 1.0e-6))
+
+    def get_action_scale_ratio(self) -> float:
+        return float(self.action_scale_ratio)
 
     def _goal_distance(self, point: np.ndarray) -> float:
         return float(np.linalg.norm(self.goal_point - point))

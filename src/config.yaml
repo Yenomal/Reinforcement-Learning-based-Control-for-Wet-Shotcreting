@@ -3,6 +3,7 @@ env:
   seed: 42                            # 环境随机种子
   n_theta: 200                        # 岩壁周向采样数
   n_z: 100                            # 岩壁轴向采样数
+  train_rock_env_html: "./src/rock_3D/rock_environment.html"             # 训练时固定岩壁 HTML；置空则按 seed 程序化生成
   rock_env_html: outputs/rock_environment.html # 岩壁可视化输出
 
 # 机器人参数
@@ -13,9 +14,15 @@ robot:
 planner:
   seed: 42                          # 任务随机种子
   spray_angle_range_deg: [-60.0, 60.0] # 以拱顶为 0 度，湿喷区域角度范围
-  spray_standoff_distance: 0.5        # 从壁面沿法向向内投影的目标距离
+  spray_standoff_distance: 1.5        # 从壁面沿法向向内投影的目标距离
   axial_margin_ratio: 0.05          # 隧道轴向两端留白比例，避免贴边采样
   tunnel_axial_scale: 1.5           # 旧数学隧道轴向到 PyBullet 世界坐标的缩放
+  use_reachability_map: true        # 是否使用预计算可达图，只在近似可达区域采样
+  reachability_map_path: outputs/reachability/reachability_map.npz # 可达图缓存
+  reachability_map_html: outputs/reachability/reachability_map.html # 可达图可视化
+  reachability_map_force_rebuild: false # 是否强制重建可达图缓存
+  reachability_map_samples: 32768   # 预计算可达图时的随机关节采样数
+  reachability_map_goal_chunk_size: 512 # 预计算可达图时的目标点分块大小
   use_reachability_check: false     # 是否启用随机关节采样近似可达性检查
   reachability_samples: 2048        # 可达性近似采样次数
   reachability_tolerance: 0.20      # 可达性判定容差
@@ -35,10 +42,15 @@ rl:
   env_name: math_env         # RL 环境名称
   max_episode_steps: 200      # 单局最大步数
   initial_configuration_deg: [0.0, 0.0, 0.0, 0.0] # 起点固定关节角
-  goal_tolerance: 0.1       # 3D 欧氏距离下的到达阈值
+  goal_tolerance: 0.01         # 3D 欧氏距离下的到达阈值
   max_joint_delta_deg: [4.0, 4.0, 4.0, 4.0] # 每步允许的最大关节变化量
+  action_scale_schedule:
+    enable: true
+    schedule: cosine
+    start_ratio: 1.0
+    end_ratio: 0.25
   workspace_margin: 0.25     # FK 采样工作空间边界扩展
-  progress_reward_weight: 2.0 # k in r_t = k * [phi(d_t) - phi(d_{t+1})]
+  progress_reward_weight: 10.0 # k in r_t = k * [phi(d_t) - phi(d_{t+1})]
   success_reward: 0.0        # 当前纯主奖励实验未启用
   step_penalty: 0.00         # 当前纯主奖励实验未启用
   action_l2_weight: 0.000    # 当前纯主奖励实验未启用
@@ -49,7 +61,6 @@ rl:
 model:
   hidden_sizes: [256, 256] # MLP 隐藏层大小
   activation: tanh         # MLP 激活函数
-  init_log_std: -2.0       # 初始动作方差对数
 
 # 算法公共参数
 algorithm:
@@ -58,7 +69,7 @@ algorithm:
 
 # PPO 专有参数
 ppo:
-  total_updates: 1000         # 总更新次数，其余超参数见 src/algorithm/ppo.py
+  total_updates: 200         # 总更新次数，其余超参数见 src/algorithm/ppo.py
 
 # SAC 专有参数
 sac:
@@ -79,7 +90,7 @@ train:
 
 # 评估参数
 eval:
-  checkpoint: "./outputs/runs/sac_math_env_20260414_092223/final.pt"      # 默认权重路径
+  checkpoint: "./outputs/runs/sac_direct_0.1/final.pt"      # 默认权重路径
   episodes: 5         # 评估回合数
   seed: 123           # 评估随机种子
   headless: false     # 是否关闭可视化

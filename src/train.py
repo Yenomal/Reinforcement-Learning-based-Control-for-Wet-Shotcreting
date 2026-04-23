@@ -17,7 +17,7 @@ import torch
 import yaml
 from plotly.subplots import make_subplots
 
-from .algorithm.lr_schedule import OptimizerLRScheduler
+from .algorithm.lr_schedule import OptimizerLRScheduler, ScalarScheduler
 from .algorithm.ppo import PPOAgent, build_ppo_config
 from .algorithm.sac import SACAgent, build_sac_config
 from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
@@ -122,59 +122,78 @@ def write_metrics_csv(run_dir: Path, history: List[Dict[str, Any]]) -> None:
     if not history:
         return
 
-    fieldnames: list[str] = []
-    seen: set[str] = set()
-    for row in history:
-        for key in row.keys():
-            if key not in seen:
-                seen.add(key)
-                fieldnames.append(key)
+    preferred_fields = [
+        "progress",
+        "batch_reward_mean",
+        "episodes_in_window",
+        "success_episodes",
+        "success_rate",
+        "policy_loss",
+        "value_loss",
+        "lr",
+        "actor_lr",
+        "critic_lr",
+        "alpha_lr",
+        "env_steps_per_sec",
+    ]
+    fieldnames = [field for field in preferred_fields if any(field in row for row in history)]
 
     metrics_path = run_dir / "metrics.csv"
     with metrics_path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for row in history:
-            writer.writerow(row)
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def save_training_curves(run_dir: Path, history: List[Dict[str, Any]]) -> None:
-    """Generate an HTML dashboard for reward, success, min distance, and loss curves."""
+    """Generate an HTML dashboard for batch reward, episode stats, loss, and lr."""
     if not history:
         return
 
     progress = [row["progress"] for row in history]
-    mean_rewards = [row["mean_reward"] for row in history]
-    success_rates = [row["success_rate"] for row in history]
-    mean_min_distances = [row["mean_min_goal_distance"] for row in history]
+    batch_rewards = [row.get("batch_reward_mean", float("nan")) for row in history]
+    episodes = [row.get("episodes_in_window", 0.0) for row in history]
+    success_episodes = [row.get("success_episodes", 0.0) for row in history]
+    success_rates = [row.get("success_rate", float("nan")) for row in history]
     policy_losses = [row["policy_loss"] for row in history]
     value_losses = [row["value_loss"] for row in history]
+    lrs = [row.get("lr", float("nan")) for row in history]
+    actor_lrs = [row.get("actor_lr", float("nan")) for row in history]
+    critic_lrs = [row.get("critic_lr", float("nan")) for row in history]
+    alpha_lrs = [row.get("alpha_lr", float("nan")) for row in history]
 
     fig = make_subplots(
-        rows=4,
+        rows=5,
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.08,
-        subplot_titles=("Reward", "Success Rate", "Min Goal Distance", "Loss"),
+        subplot_titles=(
+            "Batch Reward",
+            "Episodes",
+            "Success Rate",
+            "Loss",
+            "Learning Rate",
+        ),
     )
 
     fig.add_trace(
-        go.Scatter(x=progress, y=mean_rewards, mode="lines", name="Mean Reward"),
+        go.Scatter(x=progress, y=batch_rewards, mode="lines", name="Batch Reward"),
         row=1,
         col=1,
     )
     fig.add_trace(
-        go.Scatter(x=progress, y=success_rates, mode="lines", name="Success Rate"),
+        go.Scatter(x=progress, y=episodes, mode="lines", name="Episodes"),
         row=2,
         col=1,
     )
     fig.add_trace(
-        go.Scatter(
-            x=progress,
-            y=mean_min_distances,
-            mode="lines",
-            name="Mean Min Goal Distance",
-        ),
+        go.Scatter(x=progress, y=success_episodes, mode="lines", name="Success Episodes"),
+        row=2,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=progress, y=success_rates, mode="lines", name="Success Rate"),
         row=3,
         col=1,
     )
@@ -188,15 +207,40 @@ def save_training_curves(run_dir: Path, history: List[Dict[str, Any]]) -> None:
         row=4,
         col=1,
     )
+    if any(not np.isnan(value) for value in lrs):
+        fig.add_trace(
+            go.Scatter(x=progress, y=lrs, mode="lines", name="LR"),
+            row=5,
+            col=1,
+        )
+    if any(not np.isnan(value) for value in actor_lrs):
+        fig.add_trace(
+            go.Scatter(x=progress, y=actor_lrs, mode="lines", name="Actor LR"),
+            row=5,
+            col=1,
+        )
+    if any(not np.isnan(value) for value in critic_lrs):
+        fig.add_trace(
+            go.Scatter(x=progress, y=critic_lrs, mode="lines", name="Critic LR"),
+            row=5,
+            col=1,
+        )
+    if any(not np.isnan(value) for value in alpha_lrs):
+        fig.add_trace(
+            go.Scatter(x=progress, y=alpha_lrs, mode="lines", name="Alpha LR"),
+            row=5,
+            col=1,
+        )
 
-    fig.update_xaxes(title_text="Progress", row=4, col=1)
+    fig.update_xaxes(title_text="Progress", row=5, col=1)
     fig.update_yaxes(title_text="Reward", row=1, col=1)
-    fig.update_yaxes(title_text="Success", row=2, col=1)
-    fig.update_yaxes(title_text="Distance", row=3, col=1)
+    fig.update_yaxes(title_text="Episodes", row=2, col=1)
+    fig.update_yaxes(title_text="Success", row=3, col=1)
     fig.update_yaxes(title_text="Loss", row=4, col=1)
+    fig.update_yaxes(title_text="LR", row=5, col=1)
     fig.update_layout(
         title="Training Curves",
-        height=1100,
+        height=1350,
         width=1200,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
         margin=dict(l=60, r=30, t=80, b=60),
@@ -254,10 +298,10 @@ def collect_on_policy_rollout(
 
 def summarize_episodes(
     episode_summaries: List[Dict[str, Any]],
-) -> tuple[float, float, float, float]:
-    """Compute mean reward, length, success, and minimum goal distance."""
+) -> tuple[float, float, float, float, int]:
+    """Compute episode-level summary statistics inside one logging window."""
     if not episode_summaries:
-        return float("nan"), float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan"), 0
 
     rewards = [float(ep["return"]) for ep in episode_summaries]
     lengths = [int(ep["length"]) for ep in episode_summaries]
@@ -268,6 +312,7 @@ def summarize_episodes(
         float(np.mean(lengths)),
         float(np.mean(success)),
         float(np.mean(min_distances)),
+        int(np.sum(success)),
     )
 
 
@@ -278,9 +323,13 @@ def build_metrics(
     rollout_metrics: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Assemble one metrics row for logging and plotting."""
-    mean_reward, mean_length, success_rate, mean_min_goal_distance = summarize_episodes(
-        episode_summaries
-    )
+    (
+        mean_reward,
+        mean_length,
+        success_rate,
+        mean_min_goal_distance,
+        success_episodes,
+    ) = summarize_episodes(episode_summaries)
     metrics = {
         "progress": progress,
         "mean_reward": mean_reward,
@@ -288,6 +337,7 @@ def build_metrics(
         "success_rate": success_rate,
         "mean_min_goal_distance": mean_min_goal_distance,
         "episodes_in_window": len(episode_summaries),
+        "success_episodes": success_episodes,
         "policy_loss": float(update_metrics.get("policy_loss", float("nan"))),
         "value_loss": float(update_metrics.get("value_loss", float("nan"))),
     }
@@ -313,23 +363,23 @@ def _format_metric(value: Any, precision: int = 3) -> str:
     return f"{numeric:.{precision}f}"
 
 
-def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
+def log_metrics(
+    prefix: str,
+    metrics: Dict[str, Any],
+    terminal_metrics: Dict[str, Any] | None = None,
+) -> None:
     """Print a compact metrics line suited to batched environments."""
     episode_count = int(metrics.get("episodes_in_window", 0))
+    success_episodes = int(metrics.get("success_episodes", 0))
     message = (
         f"[{prefix} {metrics['progress']:05d}] "
         f"batch_r={_format_metric(metrics.get('batch_reward_mean'), 3)} "
-        f"done_frac={_format_metric(metrics.get('batch_done_rate'), 3)} "
         f"episodes={episode_count} "
-        f"ep_r={_format_metric(metrics['mean_reward'], 3)} "
-        f"ep_len={_format_metric(metrics['mean_length'], 2)} "
-        f"ep_success={_format_metric(metrics['success_rate'], 3)} "
-        f"ep_min={_format_metric(metrics['mean_min_goal_distance'], 4)} "
+        f"success_episodes={success_episodes} "
+        f"success_rate={_format_metric(metrics.get('success_rate'), 3)} "
         f"policy_loss={_format_metric(metrics['policy_loss'], 4)} "
         f"value_loss={_format_metric(metrics['value_loss'], 4)}"
     )
-    if "env_steps_per_sec" in metrics:
-        message += f" fps={metrics['env_steps_per_sec']:.1f}"
     if "lr" in metrics:
         message += f" lr={_format_metric(metrics['lr'], 6)}"
     if "actor_lr" in metrics:
@@ -338,7 +388,28 @@ def log_metrics(prefix: str, metrics: Dict[str, Any]) -> None:
         message += f" critic_lr={_format_metric(metrics['critic_lr'], 6)}"
     if "alpha_lr" in metrics:
         message += f" alpha_lr={_format_metric(metrics['alpha_lr'], 6)}"
+    if terminal_metrics:
+        for key, value in terminal_metrics.items():
+            message += f" {key}={_format_metric(value, 6)}"
     print(message)
+    print()
+
+
+def build_action_scale_scheduler(
+    rl_cfg: Dict[str, Any],
+    *,
+    total_progress: int,
+) -> ScalarScheduler | None:
+    schedule_cfg = dict(rl_cfg.get("action_scale_schedule", {}))
+    if not bool(schedule_cfg.get("enable", False)):
+        return None
+
+    return ScalarScheduler(
+        start_value=float(schedule_cfg.get("start_ratio", 1.0)),
+        end_value=float(schedule_cfg.get("end_ratio", 1.0)),
+        total_progress=total_progress,
+        schedule=str(schedule_cfg.get("schedule", "cosine")),
+    )
 
 
 def run_ppo_training(
@@ -365,6 +436,24 @@ def run_ppo_training(
         schedule=str(train_cfg.get("lr_schedule", "none")),
         min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
     )
+    exploration_cfg = dict(ppo_cfg.get("exploration_schedule", {}))
+    exploration_scheduler = None
+    if bool(exploration_cfg.get("enable", False)):
+        default_log_std = agent.get_log_std_value()
+        exploration_scheduler = ScalarScheduler(
+            start_value=float(
+                exploration_cfg.get("start_log_std", default_log_std)
+            ),
+            end_value=float(
+                exploration_cfg.get("end_log_std", default_log_std)
+            ),
+            total_progress=total_updates,
+            schedule=str(exploration_cfg.get("schedule", "cosine")),
+        )
+    action_scale_scheduler = build_action_scale_scheduler(
+        config.get("rl", {}),
+        total_progress=total_updates,
+    )
 
     if total_updates <= 0:
         raise ValueError("ppo.total_updates must be a positive integer.")
@@ -384,11 +473,23 @@ def run_ppo_training(
     print(f"Resume from update: {start_progress}")
     print(f"Rollout steps per env: {rollout_steps}")
     print(f"Effective rollout batch size: {rollout_batch_size}")
+    print(f"Exploration schedule: {'on' if exploration_scheduler is not None else 'off'}")
+    print(f"Action scale schedule: {'on' if action_scale_scheduler is not None else 'off'}")
 
     train_start_time = perf_counter()
 
     for update in range(start_progress + 1, total_updates + 1):
         lr_metrics = lr_scheduler.step(update - 1)
+        terminal_metrics: Dict[str, Any] = {}
+        if action_scale_scheduler is not None:
+            action_scale_ratio = action_scale_scheduler.step(update - 1)
+            env.set_action_scale_ratio(action_scale_ratio)
+            terminal_metrics["action_scale"] = env.get_action_scale_ratio()
+        if exploration_scheduler is not None:
+            scheduled_log_std = exploration_scheduler.step(update - 1)
+            agent.set_log_std_value(scheduled_log_std)
+            terminal_metrics["ppo_log_std"] = agent.get_log_std_value()
+            terminal_metrics["ppo_std"] = agent.get_std_value()
         batch, observation, episode_summaries = collect_on_policy_rollout(
             env=env,
             agent=agent,
@@ -413,7 +514,7 @@ def run_ppo_training(
         metrics_history.append(metrics)
 
         if log_interval > 0 and update % log_interval == 0:
-            log_metrics("Update", metrics)
+            log_metrics("Update", metrics, terminal_metrics=terminal_metrics)
 
     write_metrics_csv(run_dir, metrics_history)
     save_training_curves(run_dir, metrics_history)
@@ -453,6 +554,26 @@ def run_sac_training(
         schedule=str(train_cfg.get("lr_schedule", "none")),
         min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
     )
+    exploration_cfg = dict(sac_cfg.get("exploration_schedule", {}))
+    exploration_scheduler = None
+    if bool(exploration_cfg.get("enable", False)):
+        start_target_entropy = float(
+            exploration_cfg.get("start_target_entropy", agent.get_target_entropy())
+        )
+        end_target_entropy = float(
+            exploration_cfg.get("end_target_entropy", agent.get_target_entropy())
+        )
+        agent.set_target_entropy(start_target_entropy)
+        exploration_scheduler = ScalarScheduler(
+            start_value=start_target_entropy,
+            end_value=end_target_entropy,
+            total_progress=total_steps,
+            schedule=str(exploration_cfg.get("schedule", "cosine")),
+        )
+    action_scale_scheduler = build_action_scale_scheduler(
+        config.get("rl", {}),
+        total_progress=total_steps,
+    )
 
     if total_steps <= 0:
         raise ValueError("sac.total_steps must be a positive integer.")
@@ -486,6 +607,9 @@ def run_sac_training(
     print(f"Total steps: {total_steps}")
     print(f"Resume from step: {start_progress}")
     print(f"Replay buffer size: {buffer_size}")
+    print(f"Updates per batched env step: {updates_per_step}")
+    print(f"Exploration schedule: {'on' if exploration_scheduler is not None else 'off'}")
+    print(f"Action scale schedule: {'on' if action_scale_scheduler is not None else 'off'}")
 
     progress = int(start_progress)
     next_log_step = (
@@ -496,6 +620,11 @@ def run_sac_training(
     train_start_time = perf_counter()
 
     while progress < total_steps:
+        terminal_metrics: Dict[str, Any] = {}
+        if action_scale_scheduler is not None:
+            action_scale_ratio = action_scale_scheduler.step(progress)
+            env.set_action_scale_ratio(action_scale_ratio)
+            terminal_metrics["action_scale"] = env.get_action_scale_ratio()
         if progress < learning_starts:
             action = torch.empty(
                 (env.num_envs, env.action_dim),
@@ -526,12 +655,16 @@ def run_sac_training(
         progress += env.num_envs
         current_progress = min(progress, total_steps)
         latest_metrics.update(lr_scheduler.step(current_progress))
+        if exploration_scheduler is not None:
+            scheduled_target_entropy = exploration_scheduler.step(current_progress)
+            agent.set_target_entropy(scheduled_target_entropy)
+            terminal_metrics["sac_target_entropy"] = agent.get_target_entropy()
         window_reward_sum += float(torch.as_tensor(rewards).sum().detach().cpu().item())
         window_transition_count += int(torch.as_tensor(rewards).numel())
         window_done_count += int(done.to(dtype=torch.int32).sum().detach().cpu().item())
 
         if progress >= learning_starts and len(replay_buffer) >= batch_size:
-            for _ in range(updates_per_step * env.num_envs):
+            for _ in range(updates_per_step):
                 batch: ReplayBatch = replay_buffer.sample(batch_size=batch_size, device=device)
                 latest_metrics = agent.update(batch)
 
@@ -561,7 +694,7 @@ def run_sac_training(
             metrics_history.append(metrics)
 
             if log_interval_steps > 0:
-                log_metrics("Step", metrics)
+                log_metrics("Step", metrics, terminal_metrics=terminal_metrics)
 
             recent_episodes = []
             window_reward_sum = 0.0

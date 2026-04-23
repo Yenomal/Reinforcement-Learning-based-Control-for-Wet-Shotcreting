@@ -16,7 +16,8 @@ from ..rock_env.rock_wall import (
     R_BASE,
     clamp_uv,
     generate_rock_environment,
-    surface_point,
+    surface_normal_from_environment,
+    surface_point_from_environment,
 )
 
 
@@ -42,52 +43,17 @@ def _estimate_surface_normal_world(
     u: float,
     v: float,
     *,
-    noise_gen: object,
+    rock_env: Dict[str, object],
     axial_scale: float,
-    delta: float = DELTA,
 ) -> np.ndarray:
     """Estimate outward surface normal in the robot/PyBullet world frame."""
-    u, v = clamp_uv(u, v)
-    u_minus, _ = clamp_uv(u - delta, v)
-    u_plus, _ = clamp_uv(u + delta, v)
-    _, v_minus = clamp_uv(u, v - delta)
-    _, v_plus = clamp_uv(u, v + delta)
-
-    point_u_minus = _math_point_to_world(
-        surface_point(u_minus, v, noise_gen=noise_gen),
-        axial_scale=axial_scale,
-    )
-    point_u_plus = _math_point_to_world(
-        surface_point(u_plus, v, noise_gen=noise_gen),
-        axial_scale=axial_scale,
-    )
-    point_v_minus = _math_point_to_world(
-        surface_point(u, v_minus, noise_gen=noise_gen),
-        axial_scale=axial_scale,
-    )
-    point_v_plus = _math_point_to_world(
-        surface_point(u, v_plus, noise_gen=noise_gen),
-        axial_scale=axial_scale,
-    )
-
-    du = max(u_plus - u_minus, 1e-8)
-    dv = max(v_plus - v_minus, 1e-8)
-    tangent_u = (point_u_plus - point_u_minus) / du
-    tangent_v = (point_v_plus - point_v_minus) / dv
-
-    normal = np.cross(tangent_u, tangent_v)
-    normal_norm = np.linalg.norm(normal)
-    if normal_norm <= 1e-10:
-        theta = u / R_BASE
-        radial_math = np.array([np.cos(theta), np.sin(theta), 0.0], dtype=np.float32)
-        radial_world = _math_vector_to_world(radial_math, axial_scale=axial_scale)
-        return radial_world / max(np.linalg.norm(radial_world), 1e-8)
-
-    normal = normal / normal_norm
+    normal = surface_normal_from_environment(rock_env, u, v, delta=DELTA)
     theta = u / R_BASE
     radial_math = np.array([np.cos(theta), np.sin(theta), 0.0], dtype=np.float32)
     radial_world = _math_vector_to_world(radial_math, axial_scale=axial_scale)
     radial_world = radial_world / max(np.linalg.norm(radial_world), 1e-8)
+    normal = _math_vector_to_world(normal, axial_scale=axial_scale)
+    normal = normal / max(np.linalg.norm(normal), 1e-8)
     if float(np.dot(normal, radial_world)) < 0.0:
         normal = -normal
     return normal.astype(np.float32)
@@ -103,7 +69,6 @@ def _sample_surface_goal(
     axial_scale: float,
 ) -> Dict[str, object]:
     """Sample one wall point from the allowed wet-spray region and project inward."""
-    noise_gen = rock_env["noise_gen"]
     angle_min_deg, angle_max_deg = spray_angle_range_deg
     spray_angle_deg = float(rng.uniform(angle_min_deg, angle_max_deg))
     theta = float((np.pi * 0.5) + np.deg2rad(spray_angle_deg))
@@ -113,12 +78,12 @@ def _sample_surface_goal(
     margin_v = float(L_TUNNEL * axial_margin_ratio)
     v = float(rng.uniform(margin_v, max(L_TUNNEL - margin_v, margin_v)))
 
-    surface_point_math = surface_point(u, v, noise_gen=noise_gen)
+    surface_point_math = surface_point_from_environment(rock_env, u, v)
     surface_point_world = _math_point_to_world(surface_point_math, axial_scale=axial_scale)
     surface_normal_world = _estimate_surface_normal_world(
         u,
         v,
-        noise_gen=noise_gen,
+        rock_env=rock_env,
         axial_scale=axial_scale,
     )
     target_point = surface_point_world - surface_normal_world * float(spray_standoff_distance)
@@ -130,6 +95,47 @@ def _sample_surface_goal(
         "surface_point": surface_point_world.astype(np.float32),
         "surface_normal": surface_normal_world.astype(np.float32),
         "point": target_point.astype(np.float32),
+    }
+
+
+def _sample_surface_goal_from_reachability_map(
+    reachability_map: Dict[str, object],
+    rng: np.random.Generator,
+) -> Dict[str, object]:
+    """Sample one prevalidated goal directly from the cached reachability map."""
+    reachable_indices = np.asarray(reachability_map["reachable_indices"], dtype=np.int64)
+    if reachable_indices.size == 0:
+        raise ValueError("Reachability map does not contain any reachable planner cells.")
+
+    chosen_index = int(rng.integers(0, reachable_indices.shape[0]))
+    row, col = reachable_indices[chosen_index]
+
+    best_q = np.asarray(reachability_map["best_q"], dtype=np.float32)[row, col]
+    best_distance = float(np.asarray(reachability_map["best_distance"], dtype=np.float32)[row, col])
+    step_lower_bound = float(
+        np.asarray(reachability_map["step_lower_bound"], dtype=np.float32)[row, col]
+    )
+
+    return {
+        "surface_u": float(np.asarray(reachability_map["surface_u_grid"], dtype=np.float32)[row, col]),
+        "surface_v": float(np.asarray(reachability_map["surface_v_grid"], dtype=np.float32)[row, col]),
+        "spray_angle_deg": float(
+            np.asarray(reachability_map["spray_angle_grid"], dtype=np.float32)[row, col]
+        ),
+        "surface_point": np.asarray(
+            reachability_map["surface_point_grid"], dtype=np.float32
+        )[row, col].copy(),
+        "surface_normal": np.asarray(
+            reachability_map["surface_normal_grid"], dtype=np.float32
+        )[row, col].copy(),
+        "point": np.asarray(reachability_map["goal_point_grid"], dtype=np.float32)[row, col].copy(),
+        "q_guess": best_q.copy(),
+        "q_guess_deg": np.rad2deg(best_q).astype(np.float32),
+        "reachability": {
+            "reachable": True,
+            "best_distance": best_distance,
+            "step_lower_bound": step_lower_bound,
+        },
     }
 
 
@@ -199,6 +205,7 @@ def sample_planner_task(
     kinematics: RobotKinematics,
     planner_cfg: Dict[str, object],
     rl_cfg: Dict[str, object],
+    reachability_map: Optional[Dict[str, object]] = None,
     seed: Optional[int] = None,
 ) -> Dict[str, object]:
     """Sample one task from the wall spray region with optional reachability filtering."""
@@ -230,7 +237,10 @@ def sample_planner_task(
     max_goal_sampling_trials = int(planner_cfg.get("max_goal_sampling_trials", 256))
 
     goal_state: Optional[Dict[str, object]] = None
-    for _ in range(max_goal_sampling_trials):
+    if reachability_map is not None:
+        goal_state = _sample_surface_goal_from_reachability_map(reachability_map, rng)
+
+    for _ in range(max_goal_sampling_trials if goal_state is None else 0):
         sampled_goal = _sample_surface_goal(
             rock_env,
             rng,
@@ -272,6 +282,7 @@ def sample_planner_task_from_environment(
     kinematics: RobotKinematics,
     planner_cfg: Dict[str, object],
     rl_cfg: Dict[str, object],
+    reachability_map: Optional[Dict[str, object]] = None,
     seed: Optional[int] = None,
 ) -> Dict[str, object]:
     """Sample one planner task from a wall environment and robot model."""
@@ -280,6 +291,7 @@ def sample_planner_task_from_environment(
         kinematics=kinematics,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
+        reachability_map=reachability_map,
         seed=seed,
     )
 

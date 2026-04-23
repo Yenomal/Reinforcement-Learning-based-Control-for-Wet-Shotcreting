@@ -41,6 +41,14 @@ class BaseTrainEnv(ABC):
     ) -> tuple[Any, Any, Any, Any, List[Dict[str, Any]]]:
         """Step all environments with batched actions."""
 
+    @abstractmethod
+    def set_action_scale_ratio(self, ratio: float) -> None:
+        """Update the environment-side action scale ratio."""
+
+    @abstractmethod
+    def get_action_scale_ratio(self) -> float:
+        """Return the current environment-side action scale ratio."""
+
     def close(self) -> None:
         return None
 
@@ -119,6 +127,13 @@ class ClassicTrainEnv(BaseTrainEnv):
             np.asarray(truncated, dtype=bool),
             infos,
         )
+
+    def set_action_scale_ratio(self, ratio: float) -> None:
+        for env in self.envs:
+            env.set_action_scale_ratio(ratio)
+
+    def get_action_scale_ratio(self) -> float:
+        return float(self.envs[0].get_action_scale_ratio())
 
 
 def build_train_env(

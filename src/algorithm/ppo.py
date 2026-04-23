@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
 
 import torch
@@ -18,28 +19,41 @@ SQUASH_EPS = 1.0e-6
 
 DEFAULT_PPO_CONFIG: Dict[str, Any] = {
     "lr": 3.0e-4,
+    "init_log_std": -2.0,
     "gae_lambda": 0.95,
     "clip_ratio": 0.2,
     "value_coef": 0.5,
     "normalize_value_targets": False,
     "entropy_coef": 0.0,
     "max_grad_norm": 0.5,
-    "rollout_steps": 2048,
+    "rollout_steps": 65536,
     "update_epochs": 10,
-    "minibatch_size": 64,
+    "minibatch_size": 512,
     "normalize_advantages": True,
+    "exploration_schedule": {
+        "enable": False,
+        "schedule": "cosine",
+        "start_log_std": -1.0,
+        "end_log_std": -2.0,
+    },
 }
 
 
 def build_ppo_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Build PPO hyperparameters from the project defaults."""
-    resolved = dict(DEFAULT_PPO_CONFIG)
+    resolved = copy.deepcopy(DEFAULT_PPO_CONFIG)
     if overrides is None:
         return resolved
 
     for key in DEFAULT_PPO_CONFIG:
         if key in overrides:
-            resolved[key] = overrides[key]
+            if (
+                isinstance(DEFAULT_PPO_CONFIG[key], dict)
+                and isinstance(overrides[key], dict)
+            ):
+                resolved[key].update(overrides[key])
+            else:
+                resolved[key] = overrides[key]
     return resolved
 
 
@@ -123,7 +137,7 @@ class PPOAgent:
 
         hidden_sizes = model_cfg.get("hidden_sizes", [256, 256])
         activation = str(model_cfg.get("activation", "tanh"))
-        init_log_std = float(model_cfg.get("init_log_std", -0.5))
+        init_log_std = float(resolved_cfg["init_log_std"])
 
         self.actor = MLP(
             input_dim=observation_dim,
@@ -140,10 +154,13 @@ class PPOAgent:
         self.log_std = nn.Parameter(
             torch.full((action_dim,), init_log_std, device=self.device)
         )
+        exploration_schedule_cfg = dict(algorithm_cfg.get("exploration_schedule", {}))
+        self.use_scheduled_exploration = bool(exploration_schedule_cfg.get("enable", False))
+        self.log_std.requires_grad_(not self.use_scheduled_exploration)
 
-        parameters = list(self.actor.parameters()) + list(self.critic.parameters()) + [
-            self.log_std
-        ]
+        parameters = list(self.actor.parameters()) + list(self.critic.parameters())
+        if not self.use_scheduled_exploration:
+            parameters.append(self.log_std)
         self.optimizer = torch.optim.Adam(
             parameters,
             lr=float(resolved_cfg["lr"]),
@@ -165,6 +182,16 @@ class PPOAgent:
         mean = self.actor(observations)
         std = torch.exp(self.log_std).expand_as(mean)
         return Normal(mean, std)
+
+    def set_log_std_value(self, value: float) -> None:
+        with torch.no_grad():
+            self.log_std.fill_(float(value))
+
+    def get_log_std_value(self) -> float:
+        return float(self.log_std.detach().mean().cpu().item())
+
+    def get_std_value(self) -> float:
+        return float(torch.exp(self.log_std.detach()).mean().cpu().item())
 
     @staticmethod
     def _squash_action(pre_tanh_action: torch.Tensor) -> torch.Tensor:

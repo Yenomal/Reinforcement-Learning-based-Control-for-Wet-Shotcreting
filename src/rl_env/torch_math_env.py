@@ -12,9 +12,10 @@ import torch
 
 from ..component.disturbance import SensorNoise
 from ..component.planner import sample_planner_task_from_environment
+from ..component.reachability_map import build_or_load_reachability_map
 from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
 from ..rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
-from ..rock_env.rock_wall import generate_rock_environment
+from ..rock_env.rock_wall import build_training_rock_environment
 
 
 SEED_STRIDE = 9973
@@ -62,13 +63,18 @@ class TorchMathEnv:
         self.num_envs = int(num_envs)
         self.dtype = torch.float32
 
-        self.rock_env = generate_rock_environment(
-            n_theta=int(self.env_cfg.get("n_theta", 200)),
-            n_z=int(self.env_cfg.get("n_z", 100)),
-            seed=int(self.env_cfg.get("seed", 42)),
-        )
+        self.rock_env = build_training_rock_environment(self.env_cfg)
         self.kinematics: RobotKinematics = load_robot_kinematics(
             self.robot_cfg.get("kinematics_path")
+        )
+        self.reachability_map = build_or_load_reachability_map(
+            rock_env=self.rock_env,
+            kinematics=self.kinematics,
+            env_cfg=self.env_cfg,
+            planner_cfg=self.planner_cfg,
+            rl_cfg=self.rl_cfg,
+            robot_cfg=self.robot_cfg,
+            device=self.device,
         )
         self.torch_kinematics = TorchRobotKinematics.from_robot_kinematics(
             self.kinematics,
@@ -94,6 +100,7 @@ class TorchMathEnv:
             dtype=self.dtype,
             device=self.device,
         )
+        self.action_scale_ratio = 1.0
 
         self.max_episode_steps = int(self.rl_cfg.get("max_episode_steps", 200))
         self.goal_tolerance = float(self.rl_cfg.get("goal_tolerance", 0.2))
@@ -152,7 +159,8 @@ class TorchMathEnv:
         )
         bounded_joint_delta = torch.clamp(action_tensor, -1.0, 1.0)
 
-        proposed_q = self.current_q + bounded_joint_delta * self.max_joint_delta
+        effective_max_joint_delta = self.max_joint_delta * float(self.action_scale_ratio)
+        proposed_q = self.current_q + bounded_joint_delta * effective_max_joint_delta
         clipped_q = self.torch_kinematics.clip_configuration(proposed_q)
         boundary_hit = torch.any(torch.abs(proposed_q - clipped_q) > 1e-6, dim=-1)
 
@@ -194,6 +202,12 @@ class TorchMathEnv:
     def close(self) -> None:
         return None
 
+    def set_action_scale_ratio(self, ratio: float) -> None:
+        self.action_scale_ratio = float(max(ratio, 1.0e-6))
+
+    def get_action_scale_ratio(self) -> float:
+        return float(self.action_scale_ratio)
+
     def _reset_indices(self, indices: Sequence[int], base_seed: Optional[int]) -> None:
         for env_index in indices:
             if base_seed is not None:
@@ -205,6 +219,7 @@ class TorchMathEnv:
                 kinematics=self.kinematics,
                 planner_cfg=self.planner_cfg,
                 rl_cfg=self.rl_cfg,
+                reachability_map=self.reachability_map,
                 seed=sampled_seed,
             )
 

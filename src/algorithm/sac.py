@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict
 
 import numpy as np
@@ -22,27 +23,39 @@ DEFAULT_SAC_CONFIG: Dict[str, Any] = {
     "critic_lr": 3.0e-4,
     "alpha_lr": 3.0e-4,
     "tau": 0.005,
-    "batch_size": 256,
+    "batch_size": 512,
     "buffer_size": 1_000_000,
-    "learning_starts": 100,
+    "learning_starts": 4096,
     "updates_per_step": 1,
-    "log_interval_steps": 2000,
+    "log_interval_steps": 256,
     "alpha_init": 1.0,
     "target_entropy": "auto",
     "log_std_min": -5.0,
     "log_std_max": 2.0,
+    "exploration_schedule": {
+        "enable": False,
+        "schedule": "cosine",
+        "start_target_entropy": -6.0,
+        "end_target_entropy": -2.0,
+    },
 }
 
 
 def build_sac_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Build SAC hyperparameters from the project defaults."""
-    resolved = dict(DEFAULT_SAC_CONFIG)
+    resolved = copy.deepcopy(DEFAULT_SAC_CONFIG)
     if overrides is None:
         return resolved
 
     for key in DEFAULT_SAC_CONFIG:
         if key in overrides:
-            resolved[key] = overrides[key]
+            if (
+                isinstance(DEFAULT_SAC_CONFIG[key], dict)
+                and isinstance(overrides[key], dict)
+            ):
+                resolved[key].update(overrides[key])
+            else:
+                resolved[key] = overrides[key]
     return resolved
 
 
@@ -136,6 +149,12 @@ class SACAgent:
     @property
     def alpha(self) -> torch.Tensor:
         return self.log_alpha.exp()
+
+    def set_target_entropy(self, value: float) -> None:
+        self.target_entropy = float(value)
+
+    def get_target_entropy(self) -> float:
+        return float(self.target_entropy)
 
     def _actor_stats(self, observations: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         stats = self.actor(observations)

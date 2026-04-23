@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 import torch
 
+from .algorithm.lr_schedule import ScalarScheduler
 from .algorithm.ppo import PPOAgent
 from .algorithm.sac import SACAgent
 from .config import load_config
@@ -413,6 +414,23 @@ def build_agent_from_checkpoint(
     return agent
 
 
+def build_action_scale_scheduler(
+    rl_cfg: Dict[str, Any],
+    *,
+    total_progress: int,
+) -> ScalarScheduler | None:
+    schedule_cfg = dict(rl_cfg.get("action_scale_schedule", {}))
+    if not bool(schedule_cfg.get("enable", False)):
+        return None
+
+    return ScalarScheduler(
+        start_value=float(schedule_cfg.get("start_ratio", 1.0)),
+        end_value=float(schedule_cfg.get("end_ratio", 1.0)),
+        total_progress=total_progress,
+        schedule=str(schedule_cfg.get("schedule", "cosine")),
+    )
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
@@ -455,6 +473,17 @@ def main() -> None:
         disturbance_cfg=disturbance_cfg,
     )
     agent = build_agent_from_checkpoint(checkpoint, config, device=device)
+    algorithm_name = str(config.get("algorithm", {}).get("name", "ppo")).lower()
+    if algorithm_name == "ppo":
+        total_progress = int(config.get("ppo", {}).get("total_updates", 1))
+    else:
+        total_progress = int(config.get("sac", {}).get("total_steps", 1))
+    action_scale_scheduler = build_action_scale_scheduler(
+        rl_cfg,
+        total_progress=total_progress,
+    )
+    if action_scale_scheduler is not None:
+        env.set_action_scale_ratio(action_scale_scheduler.step(total_progress))
 
     total_episodes = int(args.episodes or eval_cfg.get("episodes", 5))
     eval_seed = int(eval_cfg.get("seed", 123))
@@ -499,6 +528,7 @@ def main() -> None:
     print(f"Episodes: {total_episodes}")
     print(f"Headless: {headless}")
     print(f"PyBullet: {enable_pybullet}")
+    print(f"Action scale ratio: {env.get_action_scale_ratio():.6f}")
 
     for episode_index in range(1, total_episodes + 1):
         observation, info = env.reset(seed=eval_seed + episode_index - 1)
