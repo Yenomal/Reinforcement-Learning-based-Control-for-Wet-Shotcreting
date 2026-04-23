@@ -69,7 +69,7 @@ train:
   seed: 42                   # 训练随机种子
   device: cuda               # 训练设备，若无 CUDA 会自动回退到 CPU
   env_backend: torch         # 训练环境后端：classic 或 torch
-  num_envs: 128              # torch 后端下的批量环境数量
+  num_envs: 256              # torch 后端下的批量环境数量
   lr_schedule: cosine        # 学习率调度：none 或 cosine
   lr_min_ratio: 0.1          # 余弦退火的最低学习率比例
   log_interval: 1            # 终端打印间隔
