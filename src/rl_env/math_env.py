@@ -7,11 +7,10 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-import torch
 
 from ..component.disturbance import SensorNoise
 from ..component.planner import sample_planner_task_from_environment
-from ..component.reachability_map import build_or_load_reachability_map
+from ..component.reachability_map import load_reachability_map
 from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
 from ..rock_env.rock_wall import build_training_rock_environment
 
@@ -50,17 +49,11 @@ class MathEnv:
         self.kinematics: RobotKinematics = load_robot_kinematics(
             self.robot_cfg.get("kinematics_path")
         )
-        reachability_device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
-        self.reachability_map = build_or_load_reachability_map(
-            rock_env=self.rock_env,
-            kinematics=self.kinematics,
+        self.reachability_map = load_reachability_map(
             env_cfg=self.env_cfg,
             planner_cfg=self.planner_cfg,
             rl_cfg=self.rl_cfg,
             robot_cfg=self.robot_cfg,
-            device=reachability_device,
         )
         workspace_padding = float(self.rl_cfg.get("workspace_margin", 0.25))
         self.point_lower, self.point_upper = self.kinematics.estimate_workspace_bounds(
@@ -81,7 +74,18 @@ class MathEnv:
         self.action_scale_ratio = 1.0
 
         self.max_episode_steps = int(self.rl_cfg.get("max_episode_steps", 200))
-        self.goal_tolerance = float(self.rl_cfg.get("goal_tolerance", 0.2))
+        self.success_tolerance = float(
+            self.rl_cfg.get(
+                "success_tolerance",
+                self.rl_cfg.get("goal_tolerance", 0.2),
+            )
+        )
+        self.reward_distance_scale = float(
+            self.rl_cfg.get(
+                "reward_distance_scale",
+                self.rl_cfg.get("goal_tolerance", self.success_tolerance),
+            )
+        )
         self.progress_reward_weight = float(
             self.rl_cfg.get("progress_reward_weight", 1.0)
         )
@@ -179,7 +183,7 @@ class MathEnv:
         )
         reward = progress_reward
 
-        success = goal_distance <= self.goal_tolerance
+        success = goal_distance <= self.success_tolerance
         terminated = success
         truncated = self.current_step >= self.max_episode_steps and not terminated
 
@@ -214,7 +218,7 @@ class MathEnv:
 
     def _distance_potential(self, distance: float) -> float:
         """Potential function phi(d) used by the reward."""
-        log_scale = max(self.goal_tolerance, 1e-6)
+        log_scale = max(self.reward_distance_scale, 1e-6)
         phi = float(np.log1p(distance / log_scale))
 
         # Raw-distance ablation:

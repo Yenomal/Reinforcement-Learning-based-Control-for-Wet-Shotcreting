@@ -8,4 +8,4 @@
 
 - eval：uv run python -m src.eval
 
-- 生成可达区域缓存：uv run python -m src.component.reachability_map --force
+- 生成可达区域缓存：uv run python -m src.component.reachability_map --force --device cuda

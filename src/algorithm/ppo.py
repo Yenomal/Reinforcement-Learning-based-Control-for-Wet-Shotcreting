@@ -12,7 +12,7 @@ from torch import nn
 from torch.distributions import Normal
 
 from ..component.buffer import OnPolicyBatch
-from ..model.mlp import MLP
+from ..model.mlp import build_state_network
 
 
 SQUASH_EPS = 1.0e-6
@@ -31,10 +31,10 @@ DEFAULT_PPO_CONFIG: Dict[str, Any] = {
     "minibatch_size": 512,
     "normalize_advantages": True,
     "exploration_schedule": {
-        "enable": False,
+        "enable": True,
         "schedule": "cosine",
         "start_log_std": -1.0,
-        "end_log_std": -2.0,
+        "end_log_std": -8.0,
     },
 }
 
@@ -135,21 +135,17 @@ class PPOAgent:
         self.device = device
         resolved_cfg = build_ppo_config(algorithm_cfg)
 
-        hidden_sizes = model_cfg.get("hidden_sizes", [256, 256])
-        activation = str(model_cfg.get("activation", "tanh"))
         init_log_std = float(resolved_cfg["init_log_std"])
 
-        self.actor = MLP(
+        self.actor = build_state_network(
             input_dim=observation_dim,
             output_dim=action_dim,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            model_cfg=model_cfg,
         ).to(self.device)
-        self.critic = MLP(
+        self.critic = build_state_network(
             input_dim=observation_dim,
             output_dim=1,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            model_cfg=model_cfg,
         ).to(self.device)
         self.log_std = nn.Parameter(
             torch.full((action_dim,), init_log_std, device=self.device)

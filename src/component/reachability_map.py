@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Precompute and cache wall-goal reachability maps for planner sampling."""
+"""Manual numerical-IK reachability map builder and cache loader."""
 
 from __future__ import annotations
 
@@ -28,9 +28,13 @@ from ..rock_env.rock_wall import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MAP_PATH = "outputs/reachability/reachability_map.npz"
 DEFAULT_HTML_PATH = "outputs/reachability/reachability_map.html"
-DEFAULT_SAMPLE_COUNT = 32768
-DEFAULT_GOAL_CHUNK_SIZE = 512
-MAP_VERSION = 1
+DEFAULT_INIT_SAMPLE_COUNT = 16384
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_IK_STEPS = 160
+DEFAULT_IK_LR = 5.0e-2
+DEFAULT_RESTART_COUNT = 3
+DEFAULT_REACHABILITY_TOLERANCE = 0.003
+MAP_VERSION = 2
 
 
 def _resolve_project_path(path_str: str) -> Path:
@@ -75,18 +79,10 @@ def _normalize_vectors(vectors: np.ndarray) -> np.ndarray:
     return vectors / np.maximum(norms, 1e-8)
 
 
-def _compute_distance_tolerance(
-    planner_cfg: Dict[str, Any],
-    rl_cfg: Dict[str, Any],
-) -> float:
-    planner_tol = float(
-        planner_cfg.get(
-            "reachability_tolerance",
-            rl_cfg.get("goal_tolerance", 0.2),
-        )
+def _compute_distance_tolerance(planner_cfg: Dict[str, Any]) -> float:
+    return float(
+        planner_cfg.get("reachability_tolerance", DEFAULT_REACHABILITY_TOLERANCE)
     )
-    goal_tol = float(rl_cfg.get("goal_tolerance", planner_tol))
-    return float(min(planner_tol, goal_tol))
 
 
 def _build_signature(
@@ -110,15 +106,6 @@ def _build_signature(
             "size": int(html_stat.st_size),
         }
 
-    max_joint_delta_deg = _as_float_array(
-        rl_cfg.get("max_joint_delta_deg", 4.0),
-        len(kinematics.joint_order),
-    )
-    start_q_deg = _as_float_array(
-        rl_cfg.get("initial_configuration_deg", np.zeros(len(kinematics.joint_order))),
-        len(kinematics.joint_order),
-    )
-
     return {
         "map_version": MAP_VERSION,
         "env_seed": int(env_cfg.get("seed", 42)),
@@ -131,13 +118,31 @@ def _build_signature(
         "spray_standoff_distance": float(planner_cfg.get("spray_standoff_distance", 0.5)),
         "axial_margin_ratio": float(planner_cfg.get("axial_margin_ratio", 0.05)),
         "tunnel_axial_scale": float(planner_cfg.get("tunnel_axial_scale", 1.5)),
-        "distance_tolerance": _compute_distance_tolerance(planner_cfg, rl_cfg),
-        "reachability_map_samples": int(
-            planner_cfg.get("reachability_map_samples", DEFAULT_SAMPLE_COUNT)
+        "reachability_tolerance": _compute_distance_tolerance(planner_cfg),
+        "reachability_map_init_samples": int(
+            planner_cfg.get("reachability_map_init_samples", DEFAULT_INIT_SAMPLE_COUNT)
+        ),
+        "reachability_map_batch_size": int(
+            planner_cfg.get("reachability_map_batch_size", DEFAULT_BATCH_SIZE)
+        ),
+        "reachability_map_ik_steps": int(
+            planner_cfg.get("reachability_map_ik_steps", DEFAULT_IK_STEPS)
+        ),
+        "reachability_map_ik_lr": float(
+            planner_cfg.get("reachability_map_ik_lr", DEFAULT_IK_LR)
+        ),
+        "reachability_map_restart_count": int(
+            planner_cfg.get("reachability_map_restart_count", DEFAULT_RESTART_COUNT)
         ),
         "max_episode_steps": int(rl_cfg.get("max_episode_steps", 200)),
-        "max_joint_delta_deg": max_joint_delta_deg.tolist(),
-        "initial_configuration_deg": start_q_deg.tolist(),
+        "max_joint_delta_deg": _as_float_array(
+            rl_cfg.get("max_joint_delta_deg", 4.0),
+            len(kinematics.joint_order),
+        ).tolist(),
+        "initial_configuration_deg": _as_float_array(
+            rl_cfg.get("initial_configuration_deg", np.zeros(len(kinematics.joint_order))),
+            len(kinematics.joint_order),
+        ).tolist(),
         "kinematics_path": str(kinematics_path.resolve()),
         "kinematics_mtime_ns": int(kinematics_stat.st_mtime_ns),
         "kinematics_size": int(kinematics_stat.st_size),
@@ -150,6 +155,40 @@ def _map_cache_paths(planner_cfg: Dict[str, Any]) -> tuple[Path, Path | None]:
     npz_path = _resolve_project_path(npz_path_raw)
     html_path = _resolve_project_path(html_path_raw) if html_path_raw else None
     return npz_path, html_path
+
+
+def _flatten_signature(
+    value: Any,
+    *,
+    prefix: str = "",
+) -> Dict[str, Any]:
+    flattened: Dict[str, Any] = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            flattened.update(_flatten_signature(item, prefix=child_prefix))
+        return flattened
+    flattened[prefix] = value
+    return flattened
+
+
+def _signature_diff_lines(
+    expected_signature: Dict[str, Any],
+    loaded_signature: Dict[str, Any],
+) -> list[str]:
+    expected_flat = _flatten_signature(expected_signature)
+    loaded_flat = _flatten_signature(loaded_signature)
+    all_keys = sorted(set(expected_flat.keys()) | set(loaded_flat.keys()))
+
+    diff_lines: list[str] = []
+    for key in all_keys:
+        expected_value = expected_flat.get(key, "<missing>")
+        loaded_value = loaded_flat.get(key, "<missing>")
+        if expected_value != loaded_value:
+            diff_lines.append(
+                f"  - {key}: expected={expected_value!r}, cached={loaded_value!r}"
+            )
+    return diff_lines
 
 
 def _compute_normals_grid(
@@ -191,7 +230,7 @@ def _sample_joint_configurations(
         )
         corners.append(np.where(bits, upper, lower).astype(np.float32))
 
-    enriched = np.concatenate(
+    return np.concatenate(
         [
             sampled_q,
             np.asarray(corners, dtype=np.float32),
@@ -200,12 +239,12 @@ def _sample_joint_configurations(
         ],
         axis=0,
     )
-    return enriched
 
 
 def _forward_kinematics_batch(
     torch_kinematics: TorchRobotKinematics,
     q_samples: np.ndarray,
+    *,
     device: torch.device,
     batch_size: int = 8192,
 ) -> np.ndarray:
@@ -224,7 +263,7 @@ def _nearest_joint_samples(
     fk_points: np.ndarray,
     *,
     device: torch.device,
-    goal_chunk_size: int,
+    batch_size: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     goal_tensor = torch.as_tensor(goal_points, dtype=torch.float32, device=device)
     fk_tensor = torch.as_tensor(fk_points, dtype=torch.float32, device=device)
@@ -232,15 +271,133 @@ def _nearest_joint_samples(
     best_distances = np.full(goal_points.shape[0], np.inf, dtype=np.float32)
     best_indices = np.full(goal_points.shape[0], -1, dtype=np.int64)
 
-    for start in range(0, goal_points.shape[0], goal_chunk_size):
-        stop = min(start + goal_chunk_size, goal_points.shape[0])
+    for start in range(0, goal_points.shape[0], batch_size):
+        stop = min(start + batch_size, goal_points.shape[0])
         distance_matrix = torch.cdist(goal_tensor[start:stop], fk_tensor)
         chunk_distances, chunk_indices = torch.min(distance_matrix, dim=1)
         best_distances[start:stop] = chunk_distances.detach().cpu().numpy().astype(np.float32)
         best_indices[start:stop] = chunk_indices.detach().cpu().numpy().astype(np.int64)
 
-    best_q = q_samples[best_indices].astype(np.float32)
-    return best_distances, best_q
+    return best_distances, q_samples[best_indices].astype(np.float32)
+
+
+def _build_restart_initializations(
+    init_q: np.ndarray,
+    start_q_rad: np.ndarray,
+    kinematics: RobotKinematics,
+    *,
+    restart_count: int,
+    seed: int,
+) -> np.ndarray:
+    batch_size, dof = init_q.shape
+    restart_count = max(int(restart_count), 1)
+    rng = np.random.default_rng(seed)
+    restarts = [init_q.astype(np.float32)]
+
+    if restart_count > 1:
+        restarts.append(
+            np.repeat(start_q_rad.reshape(1, dof), batch_size, axis=0).astype(np.float32)
+        )
+
+    while len(restarts) < restart_count:
+        sampled_q = np.stack(
+            [kinematics.sample_random_configuration(rng) for _ in range(batch_size)],
+            axis=0,
+        ).astype(np.float32)
+        restarts.append(sampled_q)
+
+    return np.stack(restarts[:restart_count], axis=0).astype(np.float32)
+
+
+def _solve_ik_chunk(
+    torch_kinematics: TorchRobotKinematics,
+    goal_points: np.ndarray,
+    init_q_restarts: np.ndarray,
+    *,
+    device: torch.device,
+    ik_steps: int,
+    ik_lr: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    restart_count, batch_size, dof = init_q_restarts.shape
+    goal_tensor = torch.as_tensor(goal_points, dtype=torch.float32, device=device)
+    repeated_goal_tensor = goal_tensor.unsqueeze(0).expand(restart_count, -1, -1).reshape(
+        restart_count * batch_size,
+        3,
+    )
+
+    q_param = torch.nn.Parameter(
+        torch.as_tensor(init_q_restarts, dtype=torch.float32, device=device).reshape(
+            restart_count * batch_size,
+            dof,
+        )
+    )
+    optimizer = torch.optim.Adam([q_param], lr=float(ik_lr))
+
+    for _ in range(max(int(ik_steps), 1)):
+        optimizer.zero_grad()
+        q_clamped = torch_kinematics.clip_configuration(q_param)
+        current_points = torch_kinematics.forward_kinematics(q_clamped)
+        residual = current_points - repeated_goal_tensor
+        loss = residual.pow(2).sum(dim=-1).mean()
+        loss.backward()
+        optimizer.step()
+        with torch.no_grad():
+            q_param.copy_(torch_kinematics.clip_configuration(q_param))
+
+    with torch.no_grad():
+        q_final = torch_kinematics.clip_configuration(q_param)
+        current_points = torch_kinematics.forward_kinematics(q_final)
+        distances = torch.linalg.norm(current_points - repeated_goal_tensor, dim=-1)
+
+    q_final = q_final.reshape(restart_count, batch_size, dof)
+    distances = distances.reshape(restart_count, batch_size)
+    best_restart = torch.argmin(distances, dim=0)
+    batch_indices = torch.arange(batch_size, device=device)
+    best_q = q_final[best_restart, batch_indices].detach().cpu().numpy().astype(np.float32)
+    best_distance = distances[best_restart, batch_indices].detach().cpu().numpy().astype(
+        np.float32
+    )
+    return best_q, best_distance
+
+
+def _refine_with_numerical_ik(
+    torch_kinematics: TorchRobotKinematics,
+    kinematics: RobotKinematics,
+    goal_points: np.ndarray,
+    init_q: np.ndarray,
+    start_q_rad: np.ndarray,
+    *,
+    device: torch.device,
+    batch_size: int,
+    ik_steps: int,
+    ik_lr: float,
+    restart_count: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    best_q = np.full_like(init_q, np.nan, dtype=np.float32)
+    best_distance = np.full((goal_points.shape[0],), np.inf, dtype=np.float32)
+
+    for start in range(0, goal_points.shape[0], batch_size):
+        stop = min(start + batch_size, goal_points.shape[0])
+        restart_inits = _build_restart_initializations(
+            init_q[start:stop],
+            start_q_rad,
+            kinematics,
+            restart_count=restart_count,
+            seed=seed + start,
+        )
+        refined_q, refined_distance = _solve_ik_chunk(
+            torch_kinematics,
+            goal_points[start:stop],
+            restart_inits,
+            device=device,
+            ik_steps=ik_steps,
+            ik_lr=ik_lr,
+        )
+        best_q[start:stop] = refined_q
+        best_distance[start:stop] = refined_distance
+
+    return best_q, best_distance
 
 
 def _save_reachability_html(map_data: Dict[str, Any], html_path: Path) -> None:
@@ -312,7 +469,7 @@ def _save_reachability_html(map_data: Dict[str, Any], html_path: Path) -> None:
         title=(
             "Planner Reachability Map"
             f" | reachable_ratio={reachable_ratio:.3f}"
-            f" | standoff={map_data['metadata']['signature']['spray_standoff_distance']:.2f}m"
+            f" | tolerance={map_data['metadata']['signature']['reachability_tolerance']:.4f}m"
         ),
         width=1600,
         height=520,
@@ -323,10 +480,9 @@ def _save_reachability_html(map_data: Dict[str, Any], html_path: Path) -> None:
 
 def _materialize_reachability_map(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     map_data = dict(raw_data)
-    reachable_mask = np.asarray(map_data["reachable_mask"], dtype=bool)
-    map_data["reachable_mask"] = reachable_mask
     map_data["allowed_mask"] = np.asarray(map_data["allowed_mask"], dtype=bool)
-    map_data["reachable_indices"] = np.argwhere(reachable_mask).astype(np.int64)
+    map_data["reachable_mask"] = np.asarray(map_data["reachable_mask"], dtype=bool)
+    map_data["reachable_indices"] = np.argwhere(map_data["reachable_mask"]).astype(np.int64)
     return map_data
 
 
@@ -368,25 +524,37 @@ def compute_reachability_map(
         surface_points_world - surface_normals_world * spray_standoff_distance
     ).astype(np.float32)
 
+    dof = len(kinematics.joint_order)
     start_q_rad = np.deg2rad(
         _as_float_array(
-            rl_cfg.get("initial_configuration_deg", kinematics.zero_q_rad),
-            len(kinematics.joint_order),
+            rl_cfg.get("initial_configuration_deg", np.zeros(dof)),
+            dof,
         )
     ).astype(np.float32)
     max_joint_delta = np.deg2rad(
         _as_float_array(
             rl_cfg.get("max_joint_delta_deg", 4.0),
-            len(kinematics.joint_order),
+            dof,
         )
     ).astype(np.float32)
     start_point = kinematics.forward_kinematics(start_q_rad)["tool_tip"].astype(np.float32)
 
-    sample_count = int(planner_cfg.get("reachability_map_samples", DEFAULT_SAMPLE_COUNT))
+    init_sample_count = int(
+        planner_cfg.get("reachability_map_init_samples", DEFAULT_INIT_SAMPLE_COUNT)
+    )
     sample_seed = int(planner_cfg.get("seed", 42))
+    batch_size = int(planner_cfg.get("reachability_map_batch_size", DEFAULT_BATCH_SIZE))
+    ik_steps = int(planner_cfg.get("reachability_map_ik_steps", DEFAULT_IK_STEPS))
+    ik_lr = float(planner_cfg.get("reachability_map_ik_lr", DEFAULT_IK_LR))
+    restart_count = int(
+        planner_cfg.get("reachability_map_restart_count", DEFAULT_RESTART_COUNT)
+    )
+    distance_tolerance = _compute_distance_tolerance(planner_cfg)
+    max_episode_steps = float(rl_cfg.get("max_episode_steps", 200))
+
     q_samples = _sample_joint_configurations(
         kinematics=kinematics,
-        sample_count=sample_count,
+        sample_count=init_sample_count,
         seed=sample_seed,
         start_q_rad=start_q_rad,
     )
@@ -402,34 +570,47 @@ def compute_reachability_map(
 
     allowed_indices = np.argwhere(allowed_mask)
     candidate_goal_points = goal_points_world[allowed_mask].astype(np.float32)
-    goal_chunk_size = int(planner_cfg.get("reachability_map_goal_chunk_size", DEFAULT_GOAL_CHUNK_SIZE))
-    best_distances_allowed, best_q_allowed = _nearest_joint_samples(
+    coarse_distance, coarse_q = _nearest_joint_samples(
         candidate_goal_points,
         q_samples=q_samples,
         fk_points=fk_points,
         device=device,
-        goal_chunk_size=goal_chunk_size,
+        batch_size=batch_size,
     )
-    step_lower_bound_allowed = np.max(
-        np.abs(best_q_allowed - start_q_rad.reshape(1, -1)) / np.maximum(max_joint_delta, 1e-8),
+    refined_q, refined_distance = _refine_with_numerical_ik(
+        torch_kinematics,
+        kinematics,
+        candidate_goal_points,
+        coarse_q,
+        start_q_rad,
+        device=device,
+        batch_size=batch_size,
+        ik_steps=ik_steps,
+        ik_lr=ik_lr,
+        restart_count=restart_count,
+        seed=sample_seed + 1,
+    )
+
+    step_lower_bound = np.max(
+        np.abs(refined_q - start_q_rad.reshape(1, -1)) / np.maximum(max_joint_delta, 1e-8),
         axis=1,
     ).astype(np.float32)
-    distance_tolerance = _compute_distance_tolerance(planner_cfg, rl_cfg)
-    max_episode_steps = float(rl_cfg.get("max_episode_steps", 200))
     reachable_allowed = (
-        (best_distances_allowed <= distance_tolerance)
-        & (step_lower_bound_allowed <= max_episode_steps)
+        (refined_distance <= distance_tolerance)
+        & (step_lower_bound <= max_episode_steps)
     )
 
     best_distance_grid = np.full((rows, cols), np.inf, dtype=np.float32)
     step_lower_bound_grid = np.full((rows, cols), np.inf, dtype=np.float32)
-    best_q_grid = np.full((rows, cols, len(kinematics.joint_order)), np.nan, dtype=np.float32)
+    best_q_grid = np.full((rows, cols, dof), np.nan, dtype=np.float32)
+    coarse_distance_grid = np.full((rows, cols), np.inf, dtype=np.float32)
     reachable_mask = np.zeros((rows, cols), dtype=bool)
 
     for index, (row, col) in enumerate(allowed_indices):
-        best_distance_grid[row, col] = best_distances_allowed[index]
-        step_lower_bound_grid[row, col] = step_lower_bound_allowed[index]
-        best_q_grid[row, col] = best_q_allowed[index]
+        best_distance_grid[row, col] = refined_distance[index]
+        step_lower_bound_grid[row, col] = step_lower_bound[index]
+        best_q_grid[row, col] = refined_q[index]
+        coarse_distance_grid[row, col] = coarse_distance[index]
         reachable_mask[row, col] = bool(reachable_allowed[index])
 
     return _materialize_reachability_map(
@@ -438,6 +619,7 @@ def compute_reachability_map(
             "allowed_mask": allowed_mask.astype(bool),
             "reachable_mask": reachable_mask.astype(bool),
             "best_distance": best_distance_grid.astype(np.float32),
+            "coarse_distance": coarse_distance_grid.astype(np.float32),
             "step_lower_bound": step_lower_bound_grid.astype(np.float32),
             "best_q": best_q_grid.astype(np.float32),
             "surface_point_grid": surface_points_world.astype(np.float32),
@@ -459,6 +641,7 @@ def _save_map_npz(map_path: Path, map_data: Dict[str, Any]) -> None:
         allowed_mask=map_data["allowed_mask"].astype(np.uint8),
         reachable_mask=map_data["reachable_mask"].astype(np.uint8),
         best_distance=map_data["best_distance"].astype(np.float32),
+        coarse_distance=map_data["coarse_distance"].astype(np.float32),
         step_lower_bound=map_data["step_lower_bound"].astype(np.float32),
         best_q=map_data["best_q"].astype(np.float32),
         surface_point_grid=map_data["surface_point_grid"].astype(np.float32),
@@ -479,6 +662,7 @@ def _load_map_npz(map_path: Path) -> Dict[str, Any]:
                 "allowed_mask": payload["allowed_mask"].astype(bool),
                 "reachable_mask": payload["reachable_mask"].astype(bool),
                 "best_distance": payload["best_distance"].astype(np.float32),
+                "coarse_distance": payload["coarse_distance"].astype(np.float32),
                 "step_lower_bound": payload["step_lower_bound"].astype(np.float32),
                 "best_q": payload["best_q"].astype(np.float32),
                 "surface_point_grid": payload["surface_point_grid"].astype(np.float32),
@@ -492,40 +676,29 @@ def _load_map_npz(map_path: Path) -> Dict[str, Any]:
         )
 
 
-def build_or_load_reachability_map(
+def build_and_save_reachability_map(
     *,
-    rock_env: Dict[str, Any],
-    kinematics: RobotKinematics,
     env_cfg: Dict[str, Any],
     planner_cfg: Dict[str, Any],
     rl_cfg: Dict[str, Any],
     robot_cfg: Dict[str, Any],
     device: torch.device,
-) -> Dict[str, Any] | None:
-    if not bool(planner_cfg.get("use_reachability_map", False)):
-        return None
-
-    map_path, html_path = _map_cache_paths(planner_cfg)
-    signature = _build_signature(
-        env_cfg=env_cfg,
-        planner_cfg=planner_cfg,
-        rl_cfg=rl_cfg,
-        robot_cfg=robot_cfg,
-        kinematics=kinematics,
-    )
-    force_rebuild = bool(planner_cfg.get("reachability_map_force_rebuild", False))
-
-    if map_path.exists() and not force_rebuild:
-        loaded_map = _load_map_npz(map_path)
-        if loaded_map["metadata"].get("signature") == signature:
-            return loaded_map
-
+) -> Dict[str, Any]:
+    rock_env = build_training_rock_environment(env_cfg)
+    kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
     map_data = compute_reachability_map(
         rock_env=rock_env,
         kinematics=kinematics,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
         device=device,
+    )
+    signature = _build_signature(
+        env_cfg=env_cfg,
+        planner_cfg=planner_cfg,
+        rl_cfg=rl_cfg,
+        robot_cfg=robot_cfg,
+        kinematics=kinematics,
     )
     map_data["metadata"] = {
         "signature": signature,
@@ -535,10 +708,58 @@ def build_or_load_reachability_map(
             )
         },
     }
+    map_path, html_path = _map_cache_paths(planner_cfg)
     _save_map_npz(map_path, map_data)
     if html_path is not None:
         _save_reachability_html(map_data, html_path)
     return map_data
+
+
+def load_reachability_map(
+    *,
+    env_cfg: Dict[str, Any],
+    planner_cfg: Dict[str, Any],
+    rl_cfg: Dict[str, Any],
+    robot_cfg: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    if not bool(planner_cfg.get("use_reachability_map", False)):
+        return None
+
+    map_path, _ = _map_cache_paths(planner_cfg)
+    if not map_path.exists():
+        raise FileNotFoundError(
+            "Reachability map not found: "
+            f"{map_path}\n请先手动生成，例如：\n"
+            "  uv run python -m src.component.reachability_map --force"
+        )
+
+    kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
+    loaded_map = _load_map_npz(map_path)
+    signature = _build_signature(
+        env_cfg=env_cfg,
+        planner_cfg=planner_cfg,
+        rl_cfg=rl_cfg,
+        robot_cfg=robot_cfg,
+        kinematics=kinematics,
+    )
+    if loaded_map["metadata"].get("signature") != signature:
+        cached_signature = loaded_map["metadata"].get("signature", {})
+        diff_lines = _signature_diff_lines(signature, cached_signature)
+        diff_text = "\n".join(diff_lines) if diff_lines else "  - <unknown difference>"
+        raise ValueError(
+            "Reachability map signature mismatch.\n"
+            f"缓存文件: {map_path}\n"
+            "差异字段:\n"
+            f"{diff_text}\n"
+            "请重新生成：\n"
+            "  uv run python -m src.component.reachability_map --force"
+        )
+    if int(loaded_map["reachable_mask"].sum()) <= 0:
+        raise ValueError(
+            "Reachability map does not contain any reachable planner cells.\n"
+            "请检查 reachability_tolerance、喷射距离或重新生成可达图。"
+        )
+    return loaded_map
 
 
 def parse_args() -> argparse.Namespace:
@@ -577,23 +798,24 @@ def main() -> None:
     rl_cfg = dict(config.get("rl", {}))
     robot_cfg = dict(config.get("robot", {}))
     planner_cfg["use_reachability_map"] = True
-    planner_cfg["reachability_map_force_rebuild"] = bool(args.force)
 
-    rock_env = build_training_rock_environment(env_cfg)
-    kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
+    map_path, _ = _map_cache_paths(planner_cfg)
+    if map_path.exists() and not args.force:
+        raise FileExistsError(
+            f"Reachability map already exists: {map_path}\n"
+            "如需覆盖，请增加 --force。"
+        )
+
     device = _resolve_device(args.device)
-    reachability_map = build_or_load_reachability_map(
-        rock_env=rock_env,
-        kinematics=kinematics,
+    reachability_map = build_and_save_reachability_map(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
         rl_cfg=rl_cfg,
         robot_cfg=robot_cfg,
         device=device,
     )
-    assert reachability_map is not None
 
-    map_path, html_path = _map_cache_paths(planner_cfg)
+    _, html_path = _map_cache_paths(planner_cfg)
     print("Reachability map ready")
     print(f"  Device: {device}")
     print(f"  Cache: {map_path}")

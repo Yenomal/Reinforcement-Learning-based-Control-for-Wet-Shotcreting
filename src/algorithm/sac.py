@@ -13,7 +13,7 @@ from torch import nn
 from torch.distributions import Normal
 
 from ..component.buffer import ReplayBatch
-from ..model.mlp import MLP
+from ..model.mlp import build_state_action_network, build_state_network
 
 
 LOG_STD_EPS = 1e-6
@@ -27,13 +27,13 @@ DEFAULT_SAC_CONFIG: Dict[str, Any] = {
     "buffer_size": 1_000_000,
     "learning_starts": 4096,
     "updates_per_step": 1,
-    "log_interval_steps": 256,
+    "log_interval_steps": 20000,
     "alpha_init": 1.0,
     "target_entropy": "auto",
     "log_std_min": -5.0,
     "log_std_max": 2.0,
     "exploration_schedule": {
-        "enable": False,
+        "enable": True,
         "schedule": "cosine",
         "start_target_entropy": -6.0,
         "end_target_entropy": -2.0,
@@ -75,41 +75,38 @@ class SACAgent:
         self.action_dim = int(action_dim)
         resolved_cfg = build_sac_config(algorithm_cfg)
 
-        hidden_sizes = model_cfg.get("hidden_sizes", [256, 256])
-        activation = str(model_cfg.get("activation", "tanh"))
         self.log_std_min = float(resolved_cfg["log_std_min"])
         self.log_std_max = float(resolved_cfg["log_std_max"])
 
-        self.actor = MLP(
+        self.actor = build_state_network(
             input_dim=self.observation_dim,
             output_dim=self.action_dim * 2,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            model_cfg=model_cfg,
         ).to(self.device)
         critic_input_dim = self.observation_dim + self.action_dim
-        self.critic_1 = MLP(
+        self.critic_1 = build_state_action_network(
             input_dim=critic_input_dim,
             output_dim=1,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            action_dim=self.action_dim,
+            model_cfg=model_cfg,
         ).to(self.device)
-        self.critic_2 = MLP(
+        self.critic_2 = build_state_action_network(
             input_dim=critic_input_dim,
             output_dim=1,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            action_dim=self.action_dim,
+            model_cfg=model_cfg,
         ).to(self.device)
-        self.target_critic_1 = MLP(
+        self.target_critic_1 = build_state_action_network(
             input_dim=critic_input_dim,
             output_dim=1,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            action_dim=self.action_dim,
+            model_cfg=model_cfg,
         ).to(self.device)
-        self.target_critic_2 = MLP(
+        self.target_critic_2 = build_state_action_network(
             input_dim=critic_input_dim,
             output_dim=1,
-            hidden_sizes=hidden_sizes,
-            activation=activation,
+            action_dim=self.action_dim,
+            model_cfg=model_cfg,
         ).to(self.device)
         self.target_critic_1.load_state_dict(self.critic_1.state_dict())
         self.target_critic_2.load_state_dict(self.critic_2.state_dict())

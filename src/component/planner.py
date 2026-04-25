@@ -139,43 +139,6 @@ def _sample_surface_goal_from_reachability_map(
     }
 
 
-def _approximate_reachability(
-    kinematics: RobotKinematics,
-    target_point: np.ndarray,
-    rng: np.random.Generator,
-    *,
-    num_samples: int,
-    tolerance: float,
-    anchor_q_rad: np.ndarray,
-) -> Dict[str, object]:
-    """Approximate reachability by random joint sampling around the valid space."""
-    best_q = anchor_q_rad.copy()
-    best_fk = kinematics.forward_kinematics(best_q)
-    best_distance = float(np.linalg.norm(best_fk["tool_tip"] - target_point))
-    reachable = best_distance <= tolerance
-
-    for _ in range(max(num_samples, 0)):
-        sampled_q = kinematics.sample_random_configuration(rng)
-        sampled_fk = kinematics.forward_kinematics(sampled_q)
-        distance = float(np.linalg.norm(sampled_fk["tool_tip"] - target_point))
-        if distance < best_distance:
-            best_distance = distance
-            best_q = sampled_q.copy()
-            best_fk = sampled_fk
-            reachable = distance <= tolerance
-            if reachable:
-                break
-
-    result: Dict[str, object] = {
-        "reachable": bool(reachable),
-        "best_distance": float(best_distance),
-        "best_q": best_q.astype(np.float32),
-        "best_q_deg": np.rad2deg(best_q).astype(np.float32),
-        "best_point": best_fk["tool_tip"].astype(np.float32),
-    }
-    return result
-
-
 def build_task_joint_state(
     kinematics: RobotKinematics,
     q_rad: np.ndarray,
@@ -208,7 +171,7 @@ def sample_planner_task(
     reachability_map: Optional[Dict[str, object]] = None,
     seed: Optional[int] = None,
 ) -> Dict[str, object]:
-    """Sample one task from the wall spray region with optional reachability filtering."""
+    """Sample one task from the wall spray region."""
     rng = np.random.default_rng(seed)
     dof = len(kinematics.joint_order)
 
@@ -226,14 +189,6 @@ def sample_planner_task(
     )
     spray_standoff_distance = float(planner_cfg.get("spray_standoff_distance", 1.5))
     axial_margin_ratio = float(planner_cfg.get("axial_margin_ratio", 0.05))
-    use_reachability_check = bool(planner_cfg.get("use_reachability_check", False))
-    reachability_samples = int(planner_cfg.get("reachability_samples", 2048))
-    reachability_tolerance = float(
-        planner_cfg.get(
-            "reachability_tolerance",
-            rl_cfg.get("goal_tolerance", 0.2),
-        )
-    )
     max_goal_sampling_trials = int(planner_cfg.get("max_goal_sampling_trials", 256))
 
     goal_state: Optional[Dict[str, object]] = None
@@ -249,21 +204,6 @@ def sample_planner_task(
             axial_margin_ratio=axial_margin_ratio,
             axial_scale=axial_scale,
         )
-
-        if use_reachability_check:
-            reachability = _approximate_reachability(
-                kinematics,
-                sampled_goal["point"],  # type: ignore[arg-type]
-                rng,
-                num_samples=reachability_samples,
-                tolerance=reachability_tolerance,
-                anchor_q_rad=start_q_rad,
-            )
-            sampled_goal["reachability"] = reachability
-            sampled_goal["q_guess"] = reachability["best_q"]
-            sampled_goal["q_guess_deg"] = reachability["best_q_deg"]
-            if not bool(reachability["reachable"]):
-                continue
 
         goal_state = sampled_goal
         break

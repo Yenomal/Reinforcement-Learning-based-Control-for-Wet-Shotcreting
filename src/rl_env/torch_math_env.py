@@ -12,7 +12,7 @@ import torch
 
 from ..component.disturbance import SensorNoise
 from ..component.planner import sample_planner_task_from_environment
-from ..component.reachability_map import build_or_load_reachability_map
+from ..component.reachability_map import load_reachability_map
 from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
 from ..rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
 from ..rock_env.rock_wall import build_training_rock_environment
@@ -67,14 +67,11 @@ class TorchMathEnv:
         self.kinematics: RobotKinematics = load_robot_kinematics(
             self.robot_cfg.get("kinematics_path")
         )
-        self.reachability_map = build_or_load_reachability_map(
-            rock_env=self.rock_env,
-            kinematics=self.kinematics,
+        self.reachability_map = load_reachability_map(
             env_cfg=self.env_cfg,
             planner_cfg=self.planner_cfg,
             rl_cfg=self.rl_cfg,
             robot_cfg=self.robot_cfg,
-            device=self.device,
         )
         self.torch_kinematics = TorchRobotKinematics.from_robot_kinematics(
             self.kinematics,
@@ -103,7 +100,18 @@ class TorchMathEnv:
         self.action_scale_ratio = 1.0
 
         self.max_episode_steps = int(self.rl_cfg.get("max_episode_steps", 200))
-        self.goal_tolerance = float(self.rl_cfg.get("goal_tolerance", 0.2))
+        self.success_tolerance = float(
+            self.rl_cfg.get(
+                "success_tolerance",
+                self.rl_cfg.get("goal_tolerance", 0.2),
+            )
+        )
+        self.reward_distance_scale = float(
+            self.rl_cfg.get(
+                "reward_distance_scale",
+                self.rl_cfg.get("goal_tolerance", self.success_tolerance),
+            )
+        )
         self.progress_reward_weight = float(self.rl_cfg.get("progress_reward_weight", 1.0))
         self.sensor_noises = [
             SensorNoise(self.disturbance_cfg.get("sensor_noise", {}))
@@ -176,7 +184,7 @@ class TorchMathEnv:
         )
         reward = progress_reward
 
-        success = goal_distance <= self.goal_tolerance
+        success = goal_distance <= self.success_tolerance
         terminated = success
         truncated = (self.current_step >= self.max_episode_steps) & (~terminated)
         done = terminated | truncated
@@ -270,7 +278,7 @@ class TorchMathEnv:
         return torch.linalg.norm(self.goal_point - point, dim=-1)
 
     def _distance_potential(self, distance: torch.Tensor) -> torch.Tensor:
-        log_scale = max(self.goal_tolerance, 1e-6)
+        log_scale = max(self.reward_distance_scale, 1e-6)
         phi = torch.log1p(distance / log_scale)
         return phi
 
