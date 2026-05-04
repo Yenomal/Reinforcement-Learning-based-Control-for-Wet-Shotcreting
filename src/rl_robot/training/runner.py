@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 import numpy as np
 import torch
@@ -32,6 +32,21 @@ from .artifacts import (
 )
 from .eval_hooks import build_action_scale_scheduler
 from .metrics import build_metrics, log_metrics
+
+
+def _normalize_training_config(cfg: Any) -> Dict[str, Any]:
+    if OmegaConf.is_config(cfg):
+        config = OmegaConf.to_container(cfg, resolve=True)
+    elif isinstance(cfg, Mapping):
+        config = dict(cfg)
+    else:
+        raise TypeError(
+            "Training config must be a mapping or an OmegaConf config object."
+        )
+
+    if not isinstance(config, dict):
+        raise ValueError("Training config must resolve to a mapping.")
+    return config
 
 
 def build_device(requested_device: str) -> torch.device:
@@ -405,9 +420,7 @@ def run_sac_training(
 
 
 def run_training(cfg: Any) -> None:
-    config = OmegaConf.to_container(cfg, resolve=True)
-    if not isinstance(config, dict):
-        raise ValueError("Training config must resolve to a mapping.")
+    config = _normalize_training_config(cfg)
 
     train_cfg = config.get("train", {})
     env_cfg = config.get("env", {})
