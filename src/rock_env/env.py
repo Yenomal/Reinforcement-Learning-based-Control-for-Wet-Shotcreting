@@ -14,7 +14,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 from ..config import load_config
-from .rock_wall import (
+from ..rl_robot.simulation.tunnel.rock_wall import (
     K_SLUMP,
     L_TUNNEL,
     N_THETA,
