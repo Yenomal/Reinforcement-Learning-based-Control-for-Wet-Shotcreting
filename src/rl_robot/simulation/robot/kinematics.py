@@ -11,6 +11,7 @@ import yaml
 from ...utils.resources import asset_path
 
 DEFAULT_KINEMATICS_ASSET = "robot_4dof/kinematics.yaml"
+PACKAGED_KINEMATICS_IDENTIFIER = f"asset:{DEFAULT_KINEMATICS_ASSET}"
 LEGACY_KINEMATICS_PATHS = {
     "src/rock_3D/robot_4dof/kinematics.yaml",
     "./src/rock_3D/robot_4dof/kinematics.yaml",
@@ -143,12 +144,15 @@ def _uses_packaged_kinematics(path: str | Path | None) -> bool:
     if path is None:
         return True
 
-    config_path = Path(path)
-    if config_path.exists():
-        return False
+    if isinstance(path, str) and path.strip() == "":
+        return True
 
+    config_path = Path(path)
     normalized = config_path.as_posix()
-    return normalized in LEGACY_KINEMATICS_PATHS or config_path.name == "kinematics.yaml"
+    return (
+        normalized == PACKAGED_KINEMATICS_IDENTIFIER
+        or normalized in LEGACY_KINEMATICS_PATHS
+    )
 
 
 def load_robot_kinematics(path: str | Path | None = None) -> RobotKinematics:

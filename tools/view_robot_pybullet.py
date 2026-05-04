@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import math
-import sys
 import time
-from pathlib import Path
+
+from rl_robot.utils.resources import asset_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -84,28 +85,21 @@ def require_pybullet():
     return p, pybullet_data
 
 
-def load_tunnel_metadata(root: Path) -> dict | None:
-    metadata_path = root.parent / "tunnel_environment" / "metadata.json"
-    if not metadata_path.exists():
+def load_tunnel_metadata() -> dict | None:
+    try:
+        with asset_path("tunnel_environment/metadata.json") as metadata_path:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return None
-    return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
     p, pybullet_data = require_pybullet()
-
-    root = Path(__file__).resolve().parent
-    urdf_path = root / "shipen_4dof.urdf"
-    if not urdf_path.exists():
-        raise SystemExit(
-            f"未找到 URDF: {urdf_path}\n"
-            "请先运行 Blender 资产构建脚本。"
-        )
-    tunnel_root = root.parent / "tunnel_environment"
-    tunnel_urdf_path = tunnel_root / "tunnel_environment.urdf"
-    tunnel_metadata = load_tunnel_metadata(root)
+    resource_stack = ExitStack()
+    robot_urdf_path = resource_stack.enter_context(asset_path("robot_4dof/shipen_4dof.urdf"))
+    tunnel_metadata = load_tunnel_metadata()
 
     client_mode = p.DIRECT if args.headless else p.GUI
     client = p.connect(client_mode)
@@ -125,11 +119,9 @@ def main() -> None:
 
     tunnel_id = None
     if not args.no_tunnel:
-        if not tunnel_urdf_path.exists():
-            raise SystemExit(
-                f"未找到隧道 URDF: {tunnel_urdf_path}\n"
-                "请先运行 python tools/build_tunnel_environment.py。"
-            )
+        tunnel_urdf_path = resource_stack.enter_context(
+            asset_path("tunnel_environment/tunnel_environment.urdf")
+        )
         tunnel_id = p.loadURDF(
             str(tunnel_urdf_path),
             basePosition=list(args.tunnel_position),
@@ -138,7 +130,7 @@ def main() -> None:
         )
 
     robot_id = p.loadURDF(
-        str(urdf_path),
+        str(robot_urdf_path),
         basePosition=list(args.robot_position),
         baseOrientation=p.getQuaternionFromEuler(
             [0.0, 0.0, math.radians(args.robot_yaw_deg)]
@@ -236,6 +228,7 @@ def main() -> None:
     finally:
         if p.isConnected():
             p.disconnect()
+        resource_stack.close()
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ LEGACY_TRAIN_HTML_PATHS = {
     "src/rock_3D/rock_environment.html",
     "./src/rock_3D/rock_environment.html",
 }
+PACKAGED_TRAIN_HTML_IDENTIFIER = "asset:html/rock_environment.html"
 
 class NoiseGenerator:
     """2D fractal noise wrapper for the tunnel wall."""
@@ -587,9 +588,7 @@ def build_training_rock_environment(env_cfg: Dict[str, object]) -> Dict[str, obj
     if html_path_raw:
         candidate = Path(html_path_raw)
         normalized = candidate.as_posix()
-        if candidate.exists():
-            return load_rock_environment_from_html(candidate)
-        if normalized in LEGACY_TRAIN_HTML_PATHS or candidate.name == "rock_environment.html":
+        if normalized in LEGACY_TRAIN_HTML_PATHS or normalized == PACKAGED_TRAIN_HTML_IDENTIFIER:
             with asset_path("html/rock_environment.html") as packaged_path:
                 return load_rock_environment_from_html(packaged_path)
         return load_rock_environment_from_html(candidate)

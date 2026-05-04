@@ -16,9 +16,14 @@ import torch
 from plotly.subplots import make_subplots
 
 from config import load_config
-from rl_robot.simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
+from rl_robot.simulation.robot.kinematics import (
+    PACKAGED_KINEMATICS_IDENTIFIER,
+    RobotKinematics,
+    load_robot_kinematics,
+)
 from rl_robot.simulation.robot.torch_kinematics import TorchRobotKinematics
 from rl_robot.simulation.tunnel.rock_wall import (
+    PACKAGED_TRAIN_HTML_IDENTIFIER,
     build_training_rock_environment,
     surface_normal_from_environment,
 )
@@ -58,18 +63,15 @@ def _resolve_kinematics_signature(
     path_value: str | Path | None,
     stack: ExitStack,
 ) -> tuple[str, Path]:
-    if path_value is None:
+    if path_value is None or (isinstance(path_value, str) and path_value.strip() == ""):
         resolved = stack.enter_context(asset_path("robot_4dof/kinematics.yaml"))
-        return ("asset:robot_4dof/kinematics.yaml", resolved)
+        return (PACKAGED_KINEMATICS_IDENTIFIER, resolved)
 
     candidate = Path(path_value)
-    if candidate.exists():
-        return (str(candidate.resolve()), candidate)
-
     normalized = candidate.as_posix()
-    if normalized in LEGACY_KINEMATICS_PATHS or candidate.name == "kinematics.yaml":
+    if normalized in LEGACY_KINEMATICS_PATHS or normalized == PACKAGED_KINEMATICS_IDENTIFIER:
         resolved = stack.enter_context(asset_path("robot_4dof/kinematics.yaml"))
-        return ("asset:robot_4dof/kinematics.yaml", resolved)
+        return (PACKAGED_KINEMATICS_IDENTIFIER, resolved)
 
     resolved = _resolve_project_path(str(candidate))
     return (str(resolved.resolve()), resolved)
@@ -80,13 +82,10 @@ def _resolve_train_html_signature(
     stack: ExitStack,
 ) -> tuple[str, Path]:
     candidate = Path(path_value)
-    if candidate.exists():
-        return (str(candidate.resolve()), candidate)
-
     normalized = candidate.as_posix()
-    if normalized in LEGACY_TRAIN_HTML_PATHS or candidate.name == "rock_environment.html":
+    if normalized in LEGACY_TRAIN_HTML_PATHS or normalized == PACKAGED_TRAIN_HTML_IDENTIFIER:
         resolved = stack.enter_context(asset_path("html/rock_environment.html"))
-        return ("asset:html/rock_environment.html", resolved)
+        return (PACKAGED_TRAIN_HTML_IDENTIFIER, resolved)
 
     resolved = _resolve_project_path(str(candidate))
     return (str(resolved.resolve()), resolved)

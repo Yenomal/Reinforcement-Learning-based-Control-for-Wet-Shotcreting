@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import struct
@@ -8,14 +9,7 @@ from pathlib import Path
 
 from ...utils.resources import asset_path
 
-ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets"
-HTML_PATH = ASSET_ROOT / "html" / "rock_environment.html"
-OUTPUT_DIR = ASSET_ROOT / "tunnel_environment"
-MESH_DIR = OUTPUT_DIR / "meshes"
-WALL_MESH_PATH = MESH_DIR / "tunnel_wall.obj"
-SHELL_MESH_PATH = MESH_DIR / "tunnel_shell.obj"
-URDF_PATH = OUTPUT_DIR / "tunnel_environment.urdf"
-META_PATH = OUTPUT_DIR / "metadata.json"
+DEFAULT_OUTPUT_DIR = Path("outputs/tunnel_environment")
 
 # Design parameters requested by the user.
 OUTER_WIDTH = 10.0
@@ -397,9 +391,14 @@ def write_urdf(urdf_path: Path) -> None:
     urdf_path.write_text(urdf, encoding="utf-8")
 
 
-def write_metadata(grid: SurfaceGrid, wall_meta: dict[str, object], shell_meta: dict[str, object]) -> None:
+def write_metadata(
+    metadata_path: Path,
+    grid: SurfaceGrid,
+    wall_meta: dict[str, object],
+    shell_meta: dict[str, object],
+) -> None:
     metadata = {
-        "source_html": str(HTML_PATH.name),
+        "source_html": "asset:html/rock_environment.html",
         "plotly_shape": [grid.rows, grid.cols],
         "plotly_bbox": {
             "x": [min(grid.x), max(grid.x)],
@@ -422,33 +421,54 @@ def write_metadata(grid: SurfaceGrid, wall_meta: dict[str, object], shell_meta: 
         "shell_mesh": shell_meta,
         "mesh": combine_bbox(wall_meta, shell_meta),
     }
-    META_PATH.write_text(
+    metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build tunnel environment meshes and URDF from the packaged HTML surface.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directory for generated tunnel assets.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     if TOTAL_LENGTH <= EXCAVATED_LENGTH:
         raise SystemExit("TOTAL_LENGTH must be greater than EXCAVATED_LENGTH")
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir = args.output_dir.resolve()
+    mesh_dir = output_dir / "meshes"
+    wall_mesh_path = mesh_dir / "tunnel_wall.obj"
+    shell_mesh_path = mesh_dir / "tunnel_shell.obj"
+    urdf_path = output_dir / "tunnel_environment.urdf"
+    metadata_path = output_dir / "metadata.json"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mesh_dir.mkdir(parents=True, exist_ok=True)
 
     with asset_path("html/rock_environment.html") as html_path:
         grid = load_surface_grid(html_path)
     wall_mesh, rows, scale_x = build_scaled_wall(grid)
     shell_mesh = build_shell(rows)
 
-    wall_mesh.write_obj(WALL_MESH_PATH)
-    shell_mesh.write_obj(SHELL_MESH_PATH)
-    write_urdf(URDF_PATH)
-    write_metadata(grid, wall_mesh.metadata(), shell_mesh.metadata())
+    wall_mesh.write_obj(wall_mesh_path)
+    shell_mesh.write_obj(shell_mesh_path)
+    write_urdf(urdf_path)
+    write_metadata(metadata_path, grid, wall_mesh.metadata(), shell_mesh.metadata())
 
-    print(f"[done] tunnel wall written to {WALL_MESH_PATH}")
-    print(f"[done] tunnel shell written to {SHELL_MESH_PATH}")
-    print(f"[done] urdf written to {URDF_PATH}")
-    print(f"[done] metadata written to {META_PATH}")
+    print(f"[done] tunnel wall written to {wall_mesh_path}")
+    print(f"[done] tunnel shell written to {shell_mesh_path}")
+    print(f"[done] urdf written to {urdf_path}")
+    print(f"[done] metadata written to {metadata_path}")
     print(
         "[summary] "
         f"rows={grid.rows} cols={grid.cols} "
