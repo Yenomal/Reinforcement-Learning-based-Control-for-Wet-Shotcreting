@@ -1,0 +1,3 @@
+name: ppo
+gamma: 0.99
+total_updates: 200

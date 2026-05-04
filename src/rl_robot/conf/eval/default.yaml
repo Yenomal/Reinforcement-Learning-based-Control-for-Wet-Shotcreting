@@ -1,0 +1,7 @@
+checkpoint: ./outputs/runs/sac_direct_0.1/final.pt
+episodes: 5
+seed: 123
+headless: false
+digital_env_html: ./src/rock_3D/rock_environment.html
+render_pause: 0.05
+episode_pause: 0.8

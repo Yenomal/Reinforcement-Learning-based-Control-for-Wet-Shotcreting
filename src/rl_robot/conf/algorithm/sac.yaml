@@ -1,0 +1,3 @@
+name: sac
+gamma: 0.99
+total_steps: 2_000_000

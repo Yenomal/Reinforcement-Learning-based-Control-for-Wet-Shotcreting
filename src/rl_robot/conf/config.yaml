@@ -1,0 +1,16 @@
+defaults:
+  - algorithm: ppo
+  - env: math_env
+  - rl: default
+  - planner: default
+  - model: plain_mlp
+  - train: default
+  - eval: default
+  - robot: robot_4dof
+  - disturbance: sensor_noise
+  - simulation: pybullet
+  - _self_
+
+hydra:
+  job:
+    chdir: false

@@ -1,0 +1,15 @@
+seed: 42
+spray_angle_range_deg: [-60.0, 60.0]
+spray_standoff_distance: 1.5
+axial_margin_ratio: 0.05
+tunnel_axial_scale: 1.5
+use_reachability_map: true
+reachability_map_path: outputs/reachability/reachability_map.npz
+reachability_map_html: outputs/reachability/reachability_map.html
+reachability_map_init_samples: 16384
+reachability_map_batch_size: 256
+reachability_map_ik_steps: 160
+reachability_map_ik_lr: 0.05
+reachability_map_restart_count: 3
+reachability_tolerance: 0.003
+max_goal_sampling_trials: 256
