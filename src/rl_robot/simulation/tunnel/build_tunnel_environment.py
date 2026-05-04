@@ -6,10 +6,11 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...utils.resources import asset_path
 
-ROOT = Path(__file__).resolve().parents[1]
-HTML_PATH = ROOT / "rock_environment.html"
-OUTPUT_DIR = ROOT / "tunnel_environment"
+ASSET_ROOT = Path(__file__).resolve().parents[2] / "assets"
+HTML_PATH = ASSET_ROOT / "html" / "rock_environment.html"
+OUTPUT_DIR = ASSET_ROOT / "tunnel_environment"
 MESH_DIR = OUTPUT_DIR / "meshes"
 WALL_MESH_PATH = MESH_DIR / "tunnel_wall.obj"
 SHELL_MESH_PATH = MESH_DIR / "tunnel_shell.obj"
@@ -428,15 +429,14 @@ def write_metadata(grid: SurfaceGrid, wall_meta: dict[str, object], shell_meta: 
 
 
 def main() -> None:
-    if not HTML_PATH.exists():
-        raise SystemExit(f"Missing source HTML: {HTML_PATH}")
     if TOTAL_LENGTH <= EXCAVATED_LENGTH:
         raise SystemExit("TOTAL_LENGTH must be greater than EXCAVATED_LENGTH")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     MESH_DIR.mkdir(parents=True, exist_ok=True)
 
-    grid = load_surface_grid(HTML_PATH)
+    with asset_path("html/rock_environment.html") as html_path:
+        grid = load_surface_grid(html_path)
     wall_mesh, rows, scale_x = build_scaled_wall(grid)
     shell_mesh = build_shell(rows)
 

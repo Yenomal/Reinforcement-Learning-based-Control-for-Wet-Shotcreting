@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 from typing import Any, Dict
@@ -15,6 +16,13 @@ import torch
 from plotly.subplots import make_subplots
 
 from config import load_config
+from rl_robot.simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
+from rl_robot.simulation.robot.torch_kinematics import TorchRobotKinematics
+from rl_robot.simulation.tunnel.rock_wall import (
+    build_training_rock_environment,
+    surface_normal_from_environment,
+)
+from rl_robot.utils.resources import asset_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -29,6 +37,14 @@ DEFAULT_REACHABILITY_TOLERANCE = 0.003
 MAP_VERSION = 2
 L_TUNNEL = 2.0
 R_BASE = 3.5
+LEGACY_KINEMATICS_PATHS = {
+    "src/rock_3D/robot_4dof/kinematics.yaml",
+    "./src/rock_3D/robot_4dof/kinematics.yaml",
+}
+LEGACY_TRAIN_HTML_PATHS = {
+    "src/rock_3D/rock_environment.html",
+    "./src/rock_3D/rock_environment.html",
+}
 
 
 def _resolve_project_path(path_str: str) -> Path:
@@ -36,6 +52,44 @@ def _resolve_project_path(path_str: str) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def _resolve_kinematics_signature(
+    path_value: str | Path | None,
+    stack: ExitStack,
+) -> tuple[str, Path]:
+    if path_value is None:
+        resolved = stack.enter_context(asset_path("robot_4dof/kinematics.yaml"))
+        return ("asset:robot_4dof/kinematics.yaml", resolved)
+
+    candidate = Path(path_value)
+    if candidate.exists():
+        return (str(candidate.resolve()), candidate)
+
+    normalized = candidate.as_posix()
+    if normalized in LEGACY_KINEMATICS_PATHS or candidate.name == "kinematics.yaml":
+        resolved = stack.enter_context(asset_path("robot_4dof/kinematics.yaml"))
+        return ("asset:robot_4dof/kinematics.yaml", resolved)
+
+    resolved = _resolve_project_path(str(candidate))
+    return (str(resolved.resolve()), resolved)
+
+
+def _resolve_train_html_signature(
+    path_value: str,
+    stack: ExitStack,
+) -> tuple[str, Path]:
+    candidate = Path(path_value)
+    if candidate.exists():
+        return (str(candidate.resolve()), candidate)
+
+    normalized = candidate.as_posix()
+    if normalized in LEGACY_TRAIN_HTML_PATHS or candidate.name == "rock_environment.html":
+        resolved = stack.enter_context(asset_path("html/rock_environment.html"))
+        return ("asset:html/rock_environment.html", resolved)
+
+    resolved = _resolve_project_path(str(candidate))
+    return (str(resolved.resolve()), resolved)
 
 
 def _as_float_array(value: Any, length: int) -> np.ndarray:
@@ -86,61 +140,71 @@ def _build_signature(
     robot_cfg: Dict[str, Any],
     kinematics: RobotKinematics,
 ) -> Dict[str, Any]:
-    kinematics_path = _resolve_project_path(str(robot_cfg.get("kinematics_path", "")))
-    kinematics_stat = kinematics_path.stat()
+    with ExitStack() as stack:
+        kinematics_label, kinematics_path = _resolve_kinematics_signature(
+            robot_cfg.get("kinematics_path"),
+            stack,
+        )
+        kinematics_stat = kinematics_path.stat()
 
-    html_path_raw = str(env_cfg.get("train_rock_env_html", "")).strip()
-    html_signature: Dict[str, Any] | None = None
-    if html_path_raw:
-        html_path = _resolve_project_path(html_path_raw)
-        html_stat = html_path.stat()
-        html_signature = {
-            "path": str(html_path.resolve()),
-            "mtime_ns": int(html_stat.st_mtime_ns),
-            "size": int(html_stat.st_size),
+        html_path_raw = str(env_cfg.get("train_rock_env_html", "")).strip()
+        html_signature: Dict[str, Any] | None = None
+        if html_path_raw:
+            html_label, html_path = _resolve_train_html_signature(html_path_raw, stack)
+            html_stat = html_path.stat()
+            html_signature = {
+                "path": html_label,
+                "mtime_ns": int(html_stat.st_mtime_ns),
+                "size": int(html_stat.st_size),
+            }
+
+        return {
+            "map_version": MAP_VERSION,
+            "env_seed": int(env_cfg.get("seed", 42)),
+            "n_theta": int(env_cfg.get("n_theta", 200)),
+            "n_z": int(env_cfg.get("n_z", 100)),
+            "train_rock_env_html": html_signature,
+            "spray_angle_range_deg": [
+                float(value)
+                for value in planner_cfg.get("spray_angle_range_deg", (-60.0, 60.0))
+            ],
+            "spray_standoff_distance": float(
+                planner_cfg.get("spray_standoff_distance", 0.5)
+            ),
+            "axial_margin_ratio": float(planner_cfg.get("axial_margin_ratio", 0.05)),
+            "tunnel_axial_scale": float(planner_cfg.get("tunnel_axial_scale", 1.5)),
+            "reachability_tolerance": _compute_distance_tolerance(planner_cfg),
+            "reachability_map_init_samples": int(
+                planner_cfg.get("reachability_map_init_samples", DEFAULT_INIT_SAMPLE_COUNT)
+            ),
+            "reachability_map_batch_size": int(
+                planner_cfg.get("reachability_map_batch_size", DEFAULT_BATCH_SIZE)
+            ),
+            "reachability_map_ik_steps": int(
+                planner_cfg.get("reachability_map_ik_steps", DEFAULT_IK_STEPS)
+            ),
+            "reachability_map_ik_lr": float(
+                planner_cfg.get("reachability_map_ik_lr", DEFAULT_IK_LR)
+            ),
+            "reachability_map_restart_count": int(
+                planner_cfg.get("reachability_map_restart_count", DEFAULT_RESTART_COUNT)
+            ),
+            "max_episode_steps": int(rl_cfg.get("max_episode_steps", 200)),
+            "max_joint_delta_deg": _as_float_array(
+                rl_cfg.get("max_joint_delta_deg", 4.0),
+                len(kinematics.joint_order),
+            ).tolist(),
+            "initial_configuration_deg": _as_float_array(
+                rl_cfg.get(
+                    "initial_configuration_deg",
+                    np.zeros(len(kinematics.joint_order)),
+                ),
+                len(kinematics.joint_order),
+            ).tolist(),
+            "kinematics_path": kinematics_label,
+            "kinematics_mtime_ns": int(kinematics_stat.st_mtime_ns),
+            "kinematics_size": int(kinematics_stat.st_size),
         }
-
-    return {
-        "map_version": MAP_VERSION,
-        "env_seed": int(env_cfg.get("seed", 42)),
-        "n_theta": int(env_cfg.get("n_theta", 200)),
-        "n_z": int(env_cfg.get("n_z", 100)),
-        "train_rock_env_html": html_signature,
-        "spray_angle_range_deg": [
-            float(value) for value in planner_cfg.get("spray_angle_range_deg", (-60.0, 60.0))
-        ],
-        "spray_standoff_distance": float(planner_cfg.get("spray_standoff_distance", 0.5)),
-        "axial_margin_ratio": float(planner_cfg.get("axial_margin_ratio", 0.05)),
-        "tunnel_axial_scale": float(planner_cfg.get("tunnel_axial_scale", 1.5)),
-        "reachability_tolerance": _compute_distance_tolerance(planner_cfg),
-        "reachability_map_init_samples": int(
-            planner_cfg.get("reachability_map_init_samples", DEFAULT_INIT_SAMPLE_COUNT)
-        ),
-        "reachability_map_batch_size": int(
-            planner_cfg.get("reachability_map_batch_size", DEFAULT_BATCH_SIZE)
-        ),
-        "reachability_map_ik_steps": int(
-            planner_cfg.get("reachability_map_ik_steps", DEFAULT_IK_STEPS)
-        ),
-        "reachability_map_ik_lr": float(
-            planner_cfg.get("reachability_map_ik_lr", DEFAULT_IK_LR)
-        ),
-        "reachability_map_restart_count": int(
-            planner_cfg.get("reachability_map_restart_count", DEFAULT_RESTART_COUNT)
-        ),
-        "max_episode_steps": int(rl_cfg.get("max_episode_steps", 200)),
-        "max_joint_delta_deg": _as_float_array(
-            rl_cfg.get("max_joint_delta_deg", 4.0),
-            len(kinematics.joint_order),
-        ).tolist(),
-        "initial_configuration_deg": _as_float_array(
-            rl_cfg.get("initial_configuration_deg", np.zeros(len(kinematics.joint_order))),
-            len(kinematics.joint_order),
-        ).tolist(),
-        "kinematics_path": str(kinematics_path.resolve()),
-        "kinematics_mtime_ns": int(kinematics_stat.st_mtime_ns),
-        "kinematics_size": int(kinematics_stat.st_size),
-    }
 
 
 def _map_cache_paths(planner_cfg: Dict[str, Any]) -> tuple[Path, Path | None]:
@@ -190,8 +254,6 @@ def _compute_normals_grid(
     u_grid: np.ndarray,
     v_grid: np.ndarray,
 ) -> np.ndarray:
-    from rock_env.rock_wall import surface_normal_from_environment
-
     rows, cols = u_grid.shape
     normals = np.zeros((rows, cols, 3), dtype=np.float32)
     for row in range(rows):
@@ -680,9 +742,6 @@ def build_and_save_reachability_map(
     robot_cfg: Dict[str, Any],
     device: torch.device,
 ) -> Dict[str, Any]:
-    from rock_3D.robot_4dof.kinematics import load_robot_kinematics
-    from rock_env.rock_wall import build_training_rock_environment
-
     rock_env = build_training_rock_environment(env_cfg)
     kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
     map_data = compute_reachability_map(
@@ -721,8 +780,6 @@ def load_reachability_map(
     rl_cfg: Dict[str, Any],
     robot_cfg: Dict[str, Any],
 ) -> Dict[str, Any] | None:
-    from rock_3D.robot_4dof.kinematics import load_robot_kinematics
-
     if not bool(planner_cfg.get("use_reachability_map", False)):
         return None
 

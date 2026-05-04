@@ -15,7 +15,7 @@ from .config import load_config
 from .rl_robot.algorithms.lr_schedule import ScalarScheduler
 from .rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
 from .rl_robot.algorithms.sac import SACAgent, build_sac_config
-from .rock_3D.tools.build_tunnel_environment import (
+from .rl_robot.simulation.tunnel.build_tunnel_environment import (
     SurfaceGrid,
     load_surface_grid,
     plotly_to_pybullet,
@@ -516,7 +516,7 @@ def main() -> None:
         )
     player = None
     if enable_pybullet:
-        from .rock_3D.robot_4dof.pybullet_player import PyBulletRobotPlayer
+        from .rl_robot.simulation.robot.pybullet_player import PyBulletRobotPlayer
 
         player = PyBulletRobotPlayer(
             dt=float(pybullet_cfg.get("dt", 1.0 / 240.0)),

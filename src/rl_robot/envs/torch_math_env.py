@@ -13,9 +13,9 @@ import torch
 from ..planning.disturbance import SensorNoise
 from ..planning.planner import sample_planner_task_from_environment
 from ..planning.reachability_map import load_reachability_map
-from rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
-from rock_env.rock_wall import build_training_rock_environment
+from ..simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
+from ..simulation.robot.torch_kinematics import TorchRobotKinematics
+from ..simulation.tunnel.rock_wall import build_training_rock_environment
 
 
 SEED_STRIDE = 9973

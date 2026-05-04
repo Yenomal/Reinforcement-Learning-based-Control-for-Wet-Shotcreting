@@ -9,8 +9,8 @@ from typing import Dict, Optional
 import numpy as np
 
 from config import load_config
-from rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from rock_env.rock_wall import (
+from rl_robot.simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
+from rl_robot.simulation.tunnel.rock_wall import (
     DELTA,
     L_TUNNEL,
     R_BASE,

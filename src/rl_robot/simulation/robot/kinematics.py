@@ -8,8 +8,13 @@ from typing import Any, Dict
 import numpy as np
 import yaml
 
+from ...utils.resources import asset_path
 
-DEFAULT_KINEMATICS_PATH = Path(__file__).with_name("kinematics.yaml")
+DEFAULT_KINEMATICS_ASSET = "robot_4dof/kinematics.yaml"
+LEGACY_KINEMATICS_PATHS = {
+    "src/rock_3D/robot_4dof/kinematics.yaml",
+    "./src/rock_3D/robot_4dof/kinematics.yaml",
+}
 
 
 def _as_vector3(value: Any) -> np.ndarray:
@@ -134,8 +139,24 @@ class RobotKinematics:
         )
 
 
+def _uses_packaged_kinematics(path: str | Path | None) -> bool:
+    if path is None:
+        return True
+
+    config_path = Path(path)
+    if config_path.exists():
+        return False
+
+    normalized = config_path.as_posix()
+    return normalized in LEGACY_KINEMATICS_PATHS or config_path.name == "kinematics.yaml"
+
+
 def load_robot_kinematics(path: str | Path | None = None) -> RobotKinematics:
-    config_path = Path(path) if path is not None else DEFAULT_KINEMATICS_PATH
+    if _uses_packaged_kinematics(path):
+        with asset_path(DEFAULT_KINEMATICS_ASSET) as packaged_path:
+            return load_robot_kinematics(packaged_path)
+
+    config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as file:
         data = yaml.safe_load(file) or {}
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import math
-from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+
+from ...utils.resources import asset_path
 
 
 def require_pybullet():
@@ -20,11 +22,12 @@ def require_pybullet():
     return p, pybullet_data
 
 
-def load_tunnel_metadata(root: Path) -> dict | None:
-    metadata_path = root.parent / "tunnel_environment" / "metadata.json"
-    if not metadata_path.exists():
+def load_tunnel_metadata() -> dict | None:
+    try:
+        with asset_path("tunnel_environment/metadata.json") as metadata_path:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return None
-    return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
 class PyBulletRobotPlayer:
@@ -47,16 +50,12 @@ class PyBulletRobotPlayer:
         self.robot_position = [float(v) for v in robot_position]
         self.robot_yaw_deg = float(robot_yaw_deg)
         self.tunnel_position = [float(v) for v in tunnel_position]
+        self._resource_stack = ExitStack()
 
-        root = Path(__file__).resolve().parent
-        urdf_path = root / "shipen_4dof.urdf"
-        if not urdf_path.exists():
-            raise RuntimeError(
-                f"未找到 URDF: {urdf_path}\n请先运行 Blender 资产构建脚本。"
-            )
-        tunnel_root = root.parent / "tunnel_environment"
-        tunnel_urdf_path = tunnel_root / "tunnel_environment.urdf"
-        self.tunnel_metadata = load_tunnel_metadata(root)
+        robot_urdf_path = self._resource_stack.enter_context(
+            asset_path("robot_4dof/shipen_4dof.urdf")
+        )
+        self.tunnel_metadata = load_tunnel_metadata()
 
         client_mode = self.p.DIRECT if self.headless else self.p.GUI
         self.client_id = self.p.connect(client_mode)
@@ -75,11 +74,9 @@ class PyBulletRobotPlayer:
             self.p.changeVisualShape(plane_id, -1, rgbaColor=[0.92, 0.92, 0.92, 1.0])
 
         if show_tunnel:
-            if not tunnel_urdf_path.exists():
-                raise RuntimeError(
-                    f"未找到隧道 URDF: {tunnel_urdf_path}\n"
-                    "请先运行 python tools/build_tunnel_environment.py。"
-                )
+            tunnel_urdf_path = self._resource_stack.enter_context(
+                asset_path("tunnel_environment/tunnel_environment.urdf")
+            )
             self.p.loadURDF(
                 str(tunnel_urdf_path),
                 basePosition=self.tunnel_position,
@@ -88,7 +85,7 @@ class PyBulletRobotPlayer:
             )
 
         self.robot_id = self.p.loadURDF(
-            str(urdf_path),
+            str(robot_urdf_path),
             basePosition=self.robot_position,
             baseOrientation=self.p.getQuaternionFromEuler(
                 [0.0, 0.0, math.radians(self.robot_yaw_deg)]
@@ -169,3 +166,4 @@ class PyBulletRobotPlayer:
     def close(self) -> None:
         if self.p.isConnected():
             self.p.disconnect()
+        self._resource_stack.close()

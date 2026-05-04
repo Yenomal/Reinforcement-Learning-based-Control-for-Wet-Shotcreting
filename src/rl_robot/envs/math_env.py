@@ -11,8 +11,8 @@ import numpy as np
 from ..planning.disturbance import SensorNoise
 from ..planning.planner import sample_planner_task_from_environment
 from ..planning.reachability_map import load_reachability_map
-from rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from rock_env.rock_wall import build_training_rock_environment
+from ..simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
+from ..simulation.tunnel.rock_wall import build_training_rock_environment
 
 
 def _as_float_array(value: Any, length: int) -> np.ndarray:

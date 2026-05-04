@@ -17,7 +17,8 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from ..rock_3D.tools.build_tunnel_environment import load_surface_grid
+from ...utils.resources import asset_path
+from .build_tunnel_environment import load_surface_grid
 
 try:
     from opensimplex import OpenSimplex
@@ -56,6 +57,10 @@ N_THETA = 200
 N_Z = 100
 DELTA = 0.01
 NOISE_SEED = 42
+LEGACY_TRAIN_HTML_PATHS = {
+    "src/rock_3D/rock_environment.html",
+    "./src/rock_3D/rock_environment.html",
+}
 
 class NoiseGenerator:
     """2D fractal noise wrapper for the tunnel wall."""
@@ -580,7 +585,14 @@ def build_training_rock_environment(env_cfg: Dict[str, object]) -> Dict[str, obj
     """Build the training wall from a fixed HTML path or from the procedural generator."""
     html_path_raw = str(env_cfg.get("train_rock_env_html", "")).strip()
     if html_path_raw:
-        return load_rock_environment_from_html(html_path_raw)
+        candidate = Path(html_path_raw)
+        normalized = candidate.as_posix()
+        if candidate.exists():
+            return load_rock_environment_from_html(candidate)
+        if normalized in LEGACY_TRAIN_HTML_PATHS or candidate.name == "rock_environment.html":
+            with asset_path("html/rock_environment.html") as packaged_path:
+                return load_rock_environment_from_html(packaged_path)
+        return load_rock_environment_from_html(candidate)
 
     return generate_rock_environment(
         n_theta=int(env_cfg.get("n_theta", N_THETA)),
