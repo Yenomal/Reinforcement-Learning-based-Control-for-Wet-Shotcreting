@@ -34,12 +34,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional checkpoint override, typically final.pt.",
     )
     parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Optional config override. Defaults to the checkpoint config.",
-    )
-    parser.add_argument(
         "--episodes",
         type=int,
         default=None,
