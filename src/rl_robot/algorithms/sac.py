@@ -12,13 +12,14 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
-from ..component.buffer import ReplayBatch
-from ..model.mlp import build_state_action_network, build_state_network
+from .buffer import ReplayBatch
+from ..models.mlp import build_state_action_network, build_state_network
 
 
 LOG_STD_EPS = 1e-6
 
 DEFAULT_SAC_CONFIG: Dict[str, Any] = {
+    "gamma": 0.99,
     "actor_lr": 3.0e-4,
     "critic_lr": 3.0e-4,
     "alpha_lr": 3.0e-4,
@@ -26,6 +27,7 @@ DEFAULT_SAC_CONFIG: Dict[str, Any] = {
     "batch_size": 512,
     "buffer_size": 1_000_000,
     "learning_starts": 4096,
+    "total_steps": 2_000_000,
     "updates_per_step": 1,
     "log_interval_steps": 20000,
     "alpha_init": 1.0,

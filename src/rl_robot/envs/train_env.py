@@ -10,10 +10,6 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 import torch
 
-from .math_env import MathEnv
-from .torch_math_env import TorchMathEnv
-
-
 SEED_STRIDE = 9973
 
 
@@ -66,6 +62,8 @@ class ClassicTrainEnv(BaseTrainEnv):
         algorithm_cfg: Optional[Dict[str, Any]] = None,
         disturbance_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
+        from .math_env import MathEnv
+
         self.envs = [
             MathEnv(
                 env_cfg=env_cfg,
@@ -160,6 +158,8 @@ def build_train_env(
             disturbance_cfg=disturbance_cfg,
         )
     if normalized_backend == "torch":
+        from .torch_math_env import TorchMathEnv
+
         return TorchMathEnv(
             env_cfg=env_cfg,
             planner_cfg=planner_cfg,

@@ -14,18 +14,10 @@ import plotly.graph_objects as go
 import torch
 from plotly.subplots import make_subplots
 
-from ..config import load_config
-from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from ..rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
-from ..rock_env.rock_wall import (
-    L_TUNNEL,
-    R_BASE,
-    build_training_rock_environment,
-    surface_normal_from_environment,
-)
+from config import load_config
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MAP_PATH = "outputs/reachability/reachability_map.npz"
 DEFAULT_HTML_PATH = "outputs/reachability/reachability_map.html"
 DEFAULT_INIT_SAMPLE_COUNT = 16384
@@ -35,6 +27,8 @@ DEFAULT_IK_LR = 5.0e-2
 DEFAULT_RESTART_COUNT = 3
 DEFAULT_REACHABILITY_TOLERANCE = 0.003
 MAP_VERSION = 2
+L_TUNNEL = 2.0
+R_BASE = 3.5
 
 
 def _resolve_project_path(path_str: str) -> Path:
@@ -196,6 +190,8 @@ def _compute_normals_grid(
     u_grid: np.ndarray,
     v_grid: np.ndarray,
 ) -> np.ndarray:
+    from rock_env.rock_wall import surface_normal_from_environment
+
     rows, cols = u_grid.shape
     normals = np.zeros((rows, cols, 3), dtype=np.float32)
     for row in range(rows):
@@ -684,6 +680,9 @@ def build_and_save_reachability_map(
     robot_cfg: Dict[str, Any],
     device: torch.device,
 ) -> Dict[str, Any]:
+    from rock_3D.robot_4dof.kinematics import load_robot_kinematics
+    from rock_env.rock_wall import build_training_rock_environment
+
     rock_env = build_training_rock_environment(env_cfg)
     kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
     map_data = compute_reachability_map(
@@ -722,6 +721,8 @@ def load_reachability_map(
     rl_cfg: Dict[str, Any],
     robot_cfg: Dict[str, Any],
 ) -> Dict[str, Any] | None:
+    from rock_3D.robot_4dof.kinematics import load_robot_kinematics
+
     if not bool(planner_cfg.get("use_reachability_map", False)):
         return None
 

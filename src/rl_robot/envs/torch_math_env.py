@@ -10,12 +10,12 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 import torch
 
-from ..component.disturbance import SensorNoise
-from ..component.planner import sample_planner_task_from_environment
-from ..component.reachability_map import load_reachability_map
-from ..rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
-from ..rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
-from ..rock_env.rock_wall import build_training_rock_environment
+from ..planning.disturbance import SensorNoise
+from ..planning.planner import sample_planner_task_from_environment
+from ..planning.reachability_map import load_reachability_map
+from rock_3D.robot_4dof.kinematics import RobotKinematics, load_robot_kinematics
+from rock_3D.robot_4dof.torch_kinematics import TorchRobotKinematics
+from rock_env.rock_wall import build_training_rock_environment
 
 
 SEED_STRIDE = 9973

@@ -11,13 +11,14 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
-from ..component.buffer import OnPolicyBatch
-from ..model.mlp import build_state_network
+from .buffer import OnPolicyBatch
+from ..models.mlp import build_state_network
 
 
 SQUASH_EPS = 1.0e-6
 
 DEFAULT_PPO_CONFIG: Dict[str, Any] = {
+    "gamma": 0.99,
     "lr": 3.0e-4,
     "init_log_std": -2.0,
     "gae_lambda": 0.95,
@@ -55,6 +56,16 @@ def build_ppo_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
             else:
                 resolved[key] = overrides[key]
     return resolved
+
+
+def resolve_ppo_std_config(
+    overrides: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Resolve the PPO exploration-std schedule config."""
+    resolved = build_ppo_config(overrides)
+    exploration_schedule = dict(resolved.get("exploration_schedule", {}))
+    exploration_schedule.setdefault("init_log_std", resolved["init_log_std"])
+    return exploration_schedule
 
 
 class RunningValueNormalizer:
