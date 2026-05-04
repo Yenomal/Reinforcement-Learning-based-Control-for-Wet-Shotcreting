@@ -16,7 +16,6 @@ from rl_robot.simulation.tunnel.build_tunnel_environment import (
     load_surface_grid,
     plotly_to_pybullet,
 )
-from config import load_config
 
 from .checkpoint import (
     build_action_scale_scheduler,
@@ -330,6 +329,8 @@ def run_evaluation(cfg: Any) -> None:
 
 
 def main() -> None:
+    from config import load_config
+
     args = parse_args()
     config = load_config(args.config)
     eval_cfg = dict(config.get("eval", {}))
