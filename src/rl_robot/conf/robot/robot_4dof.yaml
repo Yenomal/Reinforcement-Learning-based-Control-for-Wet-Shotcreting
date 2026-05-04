@@ -1,1 +1,1 @@
-kinematics_asset: robot_4dof/kinematics.yaml
+kinematics_path: src/rock_3D/robot_4dof/kinematics.yaml

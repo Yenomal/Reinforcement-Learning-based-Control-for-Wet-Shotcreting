@@ -8,8 +8,13 @@ defaults:
   - eval: default
   - robot: robot_4dof
   - disturbance: sensor_noise
-  - simulation: pybullet
   - _self_
+
+ppo:
+  total_updates: 200
+
+sac:
+  total_steps: 2_000_000
 
 hydra:
   job:
