@@ -31,5 +31,15 @@ include-package-data = true
 where = ["src"]
 include = ["rl_robot*"]
 
+[tool.setuptools.package-data]
+rl_robot = [
+    "py.typed",
+    "assets/**/*.yaml",
+    "assets/**/*.json",
+    "assets/**/*.urdf",
+    "assets/**/*.obj",
+    "assets/**/*.html",
+]
+
 [tool.uv]
 package = true
