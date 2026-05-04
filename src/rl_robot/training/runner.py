@@ -1,44 +1,37 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Training entry for reinforcement learning on the mathematical planning environment."""
+"""Training runner entry points."""
 
 from __future__ import annotations
 
-import argparse
-import csv
-from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List
 
 import numpy as np
-import plotly.graph_objects as go
 import torch
 import yaml
-from plotly.subplots import make_subplots
+from omegaconf import OmegaConf
 
-from .rl_robot.algorithms.buffer import (
+from rl_robot.algorithms.buffer import (
     OnPolicyBatch,
     OnPolicyBuffer,
     ReplayBatch,
     ReplayBuffer,
 )
-from .rl_robot.algorithms.lr_schedule import OptimizerLRScheduler, ScalarScheduler
-from .rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
-from .rl_robot.algorithms.sac import SACAgent, build_sac_config
-from .config import load_config
-from .rl_robot.envs.train_env import BaseTrainEnv, build_train_env
+from rl_robot.algorithms.lr_schedule import OptimizerLRScheduler, ScalarScheduler
+from rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
+from rl_robot.algorithms.sac import SACAgent, build_sac_config
+from rl_robot.envs.train_env import BaseTrainEnv, build_train_env
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train an RL agent on the math environment.")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Optional path to a YAML config file.",
-    )
-    return parser.parse_args()
+from .artifacts import (
+    build_run_dir,
+    load_metrics_csv,
+    resolve_resume_checkpoint,
+    save_checkpoint,
+    save_training_curves,
+    write_metrics_csv,
+)
+from .eval_hooks import build_action_scale_scheduler
+from .metrics import build_metrics, log_metrics
 
 
 def build_device(requested_device: str) -> torch.device:
@@ -47,211 +40,6 @@ def build_device(requested_device: str) -> torch.device:
     if normalized == "cuda" and torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
-
-
-def build_run_dir(config: Dict[str, Any]) -> Path:
-    train_cfg = config.get("train", {})
-    algorithm_cfg = config.get("algorithm", {})
-    rl_cfg = config.get("rl", {})
-
-    runs_root = Path(train_cfg.get("runs_root", "outputs/runs"))
-    algorithm_name = str(algorithm_cfg.get("name", "rl")).lower()
-    env_name = str(rl_cfg.get("env_name", "math_env"))
-    env_backend = str(train_cfg.get("env_backend", "classic")).lower()
-    run_name = f"{algorithm_name}_{env_name}_{env_backend}"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = runs_root / f"{run_name}_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    return run_dir
-
-
-def save_checkpoint(
-    run_dir: Path,
-    filename: str,
-    agent: PPOAgent | SACAgent,
-    config: Dict[str, Any],
-    progress: int,
-    metrics: Dict[str, Any],
-    extra_state: Dict[str, Any] | None = None,
-) -> None:
-    payload = {
-        "progress": progress,
-        "config": config,
-        "metrics": metrics,
-        "state_dict": agent.state_dict(),
-    }
-    if extra_state is not None:
-        payload["extra_state"] = extra_state
-    torch.save(payload, run_dir / filename)
-
-
-def load_metrics_csv(run_dir: Path) -> List[Dict[str, Any]]:
-    """Load existing metrics history from a run directory if it exists."""
-    metrics_path = run_dir / "metrics.csv"
-    if not metrics_path.exists():
-        return []
-
-    history: List[Dict[str, Any]] = []
-    with metrics_path.open("r", encoding="utf-8", newline="") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            parsed_row: Dict[str, Any] = {}
-            for key, value in row.items():
-                if value is None or value == "":
-                    parsed_row[key] = value
-                    continue
-                try:
-                    parsed_row[key] = float(value)
-                except ValueError:
-                    parsed_row[key] = value
-            history.append(parsed_row)
-    return history
-
-
-def resolve_resume_checkpoint(config: Dict[str, Any]) -> Path | None:
-    """Return the configured checkpoint path when one is provided."""
-    train_cfg = config.get("train", {})
-    checkpoint = str(train_cfg.get("checkpoint", "")).strip()
-
-    if not checkpoint:
-        return None
-
-    checkpoint_path = Path(checkpoint)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    return checkpoint_path
-
-
-def write_metrics_csv(run_dir: Path, history: List[Dict[str, Any]]) -> None:
-    """Persist scalar training metrics to CSV."""
-    if not history:
-        return
-
-    preferred_fields = [
-        "progress",
-        "batch_reward_mean",
-        "episodes_in_window",
-        "success_episodes",
-        "success_rate",
-        "policy_loss",
-        "value_loss",
-        "lr",
-        "actor_lr",
-        "critic_lr",
-        "alpha_lr",
-        "env_steps_per_sec",
-    ]
-    fieldnames = [field for field in preferred_fields if any(field in row for row in history)]
-
-    metrics_path = run_dir / "metrics.csv"
-    with metrics_path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in history:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
-
-
-def save_training_curves(run_dir: Path, history: List[Dict[str, Any]]) -> None:
-    """Generate an HTML dashboard for batch reward, episode stats, loss, and lr."""
-    if not history:
-        return
-
-    progress = [row["progress"] for row in history]
-    batch_rewards = [row.get("batch_reward_mean", float("nan")) for row in history]
-    episodes = [row.get("episodes_in_window", 0.0) for row in history]
-    success_episodes = [row.get("success_episodes", 0.0) for row in history]
-    success_rates = [row.get("success_rate", float("nan")) for row in history]
-    policy_losses = [row["policy_loss"] for row in history]
-    value_losses = [row["value_loss"] for row in history]
-    lrs = [row.get("lr", float("nan")) for row in history]
-    actor_lrs = [row.get("actor_lr", float("nan")) for row in history]
-    critic_lrs = [row.get("critic_lr", float("nan")) for row in history]
-    alpha_lrs = [row.get("alpha_lr", float("nan")) for row in history]
-
-    fig = make_subplots(
-        rows=5,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        subplot_titles=(
-            "Batch Reward",
-            "Episodes",
-            "Success Rate",
-            "Loss",
-            "Learning Rate",
-        ),
-    )
-
-    fig.add_trace(
-        go.Scatter(x=progress, y=batch_rewards, mode="lines", name="Batch Reward"),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=progress, y=episodes, mode="lines", name="Episodes"),
-        row=2,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=progress, y=success_episodes, mode="lines", name="Success Episodes"),
-        row=2,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=progress, y=success_rates, mode="lines", name="Success Rate"),
-        row=3,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=progress, y=policy_losses, mode="lines", name="Policy Loss"),
-        row=4,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=progress, y=value_losses, mode="lines", name="Value Loss"),
-        row=4,
-        col=1,
-    )
-    if any(not np.isnan(value) for value in lrs):
-        fig.add_trace(
-            go.Scatter(x=progress, y=lrs, mode="lines", name="LR"),
-            row=5,
-            col=1,
-        )
-    if any(not np.isnan(value) for value in actor_lrs):
-        fig.add_trace(
-            go.Scatter(x=progress, y=actor_lrs, mode="lines", name="Actor LR"),
-            row=5,
-            col=1,
-        )
-    if any(not np.isnan(value) for value in critic_lrs):
-        fig.add_trace(
-            go.Scatter(x=progress, y=critic_lrs, mode="lines", name="Critic LR"),
-            row=5,
-            col=1,
-        )
-    if any(not np.isnan(value) for value in alpha_lrs):
-        fig.add_trace(
-            go.Scatter(x=progress, y=alpha_lrs, mode="lines", name="Alpha LR"),
-            row=5,
-            col=1,
-        )
-
-    fig.update_xaxes(title_text="Progress", row=5, col=1)
-    fig.update_yaxes(title_text="Reward", row=1, col=1)
-    fig.update_yaxes(title_text="Episodes", row=2, col=1)
-    fig.update_yaxes(title_text="Success", row=3, col=1)
-    fig.update_yaxes(title_text="Loss", row=4, col=1)
-    fig.update_yaxes(title_text="LR", row=5, col=1)
-    fig.update_layout(
-        title="Training Curves",
-        height=1350,
-        width=1200,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0.0),
-        margin=dict(l=60, r=30, t=80, b=60),
-    )
-
-    fig.write_html(str(run_dir / "training_curves.html"), include_plotlyjs=True)
 
 
 def collect_on_policy_rollout(
@@ -299,122 +87,6 @@ def collect_on_policy_rollout(
         next_done=last_transition_done,
     )
     return buffer.to_batch(device=device), current_observation, episode_summaries
-
-
-def summarize_episodes(
-    episode_summaries: List[Dict[str, Any]],
-) -> tuple[float, float, float, float, int]:
-    """Compute episode-level summary statistics inside one logging window."""
-    if not episode_summaries:
-        return float("nan"), float("nan"), float("nan"), float("nan"), 0
-
-    rewards = [float(ep["return"]) for ep in episode_summaries]
-    lengths = [int(ep["length"]) for ep in episode_summaries]
-    success = [1.0 if ep["success"] else 0.0 for ep in episode_summaries]
-    min_distances = [float(ep["min_goal_distance"]) for ep in episode_summaries]
-    return (
-        float(np.mean(rewards)),
-        float(np.mean(lengths)),
-        float(np.mean(success)),
-        float(np.mean(min_distances)),
-        int(np.sum(success)),
-    )
-
-
-def build_metrics(
-    progress: int,
-    episode_summaries: List[Dict[str, Any]],
-    update_metrics: Dict[str, Any],
-    rollout_metrics: Dict[str, Any] | None = None,
-) -> Dict[str, Any]:
-    """Assemble one metrics row for logging and plotting."""
-    (
-        mean_reward,
-        mean_length,
-        success_rate,
-        mean_min_goal_distance,
-        success_episodes,
-    ) = summarize_episodes(episode_summaries)
-    metrics = {
-        "progress": progress,
-        "mean_reward": mean_reward,
-        "mean_length": mean_length,
-        "success_rate": success_rate,
-        "mean_min_goal_distance": mean_min_goal_distance,
-        "episodes_in_window": len(episode_summaries),
-        "success_episodes": success_episodes,
-        "policy_loss": float(update_metrics.get("policy_loss", float("nan"))),
-        "value_loss": float(update_metrics.get("value_loss", float("nan"))),
-    }
-    if rollout_metrics is not None:
-        for key, value in rollout_metrics.items():
-            metrics[key] = value
-    for key, value in update_metrics.items():
-        if key not in metrics:
-            metrics[key] = value
-    return metrics
-
-
-def _format_metric(value: Any, precision: int = 3) -> str:
-    """Format scalars for logs while making missing episode stats explicit."""
-    if value is None:
-        return "NA"
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    if np.isnan(numeric):
-        return "NA"
-    return f"{numeric:.{precision}f}"
-
-
-def log_metrics(
-    prefix: str,
-    metrics: Dict[str, Any],
-    terminal_metrics: Dict[str, Any] | None = None,
-) -> None:
-    """Print a compact metrics line suited to batched environments."""
-    episode_count = int(metrics.get("episodes_in_window", 0))
-    success_episodes = int(metrics.get("success_episodes", 0))
-    message = (
-        f"[{prefix} {metrics['progress']:05d}] "
-        f"batch_r={_format_metric(metrics.get('batch_reward_mean'), 3)} "
-        f"episodes={episode_count} "
-        f"success_episodes={success_episodes} "
-        f"success_rate={_format_metric(metrics.get('success_rate'), 3)} "
-        f"policy_loss={_format_metric(metrics['policy_loss'], 4)} "
-        f"value_loss={_format_metric(metrics['value_loss'], 4)}"
-    )
-    if "lr" in metrics:
-        message += f" lr={_format_metric(metrics['lr'], 6)}"
-    if "actor_lr" in metrics:
-        message += f" actor_lr={_format_metric(metrics['actor_lr'], 6)}"
-    if "critic_lr" in metrics:
-        message += f" critic_lr={_format_metric(metrics['critic_lr'], 6)}"
-    if "alpha_lr" in metrics:
-        message += f" alpha_lr={_format_metric(metrics['alpha_lr'], 6)}"
-    if terminal_metrics:
-        for key, value in terminal_metrics.items():
-            message += f" {key}={_format_metric(value, 6)}"
-    print(message)
-    print()
-
-
-def build_action_scale_scheduler(
-    rl_cfg: Dict[str, Any],
-    *,
-    total_progress: int,
-) -> ScalarScheduler | None:
-    schedule_cfg = dict(rl_cfg.get("action_scale_schedule", {}))
-    if not bool(schedule_cfg.get("enable", False)):
-        return None
-
-    return ScalarScheduler(
-        start_value=float(schedule_cfg.get("start_ratio", 1.0)),
-        end_value=float(schedule_cfg.get("end_ratio", 1.0)),
-        total_progress=total_progress,
-        schedule=str(schedule_cfg.get("schedule", "cosine")),
-    )
 
 
 def run_ppo_training(
@@ -732,9 +404,10 @@ def run_sac_training(
     print(f"Curves HTML: {run_dir / 'training_curves.html'}")
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_config(args.config)
+def run_training(cfg: Any) -> None:
+    config = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(config, dict):
+        raise ValueError("Training config must resolve to a mapping.")
 
     train_cfg = config.get("train", {})
     env_cfg = config.get("env", {})
@@ -818,7 +491,9 @@ def main() -> None:
                 start_progress=start_progress,
                 metrics_history=metrics_history,
             )
-        elif algorithm_name == "sac":
+            return
+
+        if algorithm_name == "sac":
             sac_cfg = build_sac_config(
                 {
                     **config.get("sac", {}),
@@ -855,11 +530,17 @@ def main() -> None:
                 metrics_history=metrics_history,
                 replay_buffer=replay_buffer,
             )
-        else:
-            raise ValueError(f"Unsupported algorithm: {algorithm_name}")
+            return
+
+        raise ValueError(f"Unsupported algorithm: {algorithm_name}")
     finally:
         env.close()
 
 
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "build_device",
+    "collect_on_policy_rollout",
+    "run_ppo_training",
+    "run_sac_training",
+    "run_training",
+]

@@ -19,5 +19,5 @@ def test_core_modules_import_from_new_package() -> None:
     assert callable(build_train_env)
     assert callable(build_state_network)
     assert callable(load_reachability_map)
-    assert importlib.import_module("src.train").__name__ == "src.train"
+    assert importlib.import_module("rl_robot.training").__name__ == "rl_robot.training"
     assert importlib.import_module("src.eval").__name__ == "src.eval"
