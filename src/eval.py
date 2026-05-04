@@ -11,12 +11,10 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 import torch
 
-from .algorithm.lr_schedule import ScalarScheduler
-from .algorithm.ppo import PPOAgent
-from .algorithm.sac import SACAgent
 from .config import load_config
-from .rl_env.math_env import MathEnv
-from .rock_3D.robot_4dof.pybullet_player import PyBulletRobotPlayer
+from .rl_robot.algorithms.lr_schedule import ScalarScheduler
+from .rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
+from .rl_robot.algorithms.sac import SACAgent, build_sac_config
 from .rock_3D.tools.build_tunnel_environment import (
     SurfaceGrid,
     load_surface_grid,
@@ -369,6 +367,8 @@ def build_agent_from_checkpoint(
     device: torch.device,
 ) -> PPOAgent | SACAgent:
     """Recreate the configured agent and load trained weights."""
+    from .rl_robot.envs.math_env import MathEnv
+
     algorithm_name = str(config.get("algorithm", {}).get("name", "ppo")).lower()
 
     model_cfg = config.get("model", {})
@@ -378,6 +378,9 @@ def build_agent_from_checkpoint(
     robot_cfg = config.get("robot", {})
     algorithm_cfg = config.get("algorithm", {})
     disturbance_cfg = config.get("disturbance", {})
+
+    from .rl_robot.envs.math_env import MathEnv
+
     env = MathEnv(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
@@ -388,8 +391,12 @@ def build_agent_from_checkpoint(
     )
 
     if algorithm_name == "ppo":
-        algorithm_cfg = dict(config.get("ppo", {}))
-        algorithm_cfg["gamma"] = float(config.get("algorithm", {}).get("gamma", 0.99))
+        algorithm_cfg = build_ppo_config(
+            {
+                **config.get("ppo", {}),
+                "gamma": float(config.get("algorithm", {}).get("gamma", 0.99)),
+            }
+        )
         agent: PPOAgent | SACAgent = PPOAgent(
             observation_dim=env.observation_dim,
             action_dim=env.action_dim,
@@ -398,8 +405,12 @@ def build_agent_from_checkpoint(
             device=device,
         )
     elif algorithm_name == "sac":
-        algorithm_cfg = dict(config.get("sac", {}))
-        algorithm_cfg["gamma"] = float(config.get("algorithm", {}).get("gamma", 0.99))
+        algorithm_cfg = build_sac_config(
+            {
+                **config.get("sac", {}),
+                "gamma": float(config.get("algorithm", {}).get("gamma", 0.99)),
+            }
+        )
         agent = SACAgent(
             observation_dim=env.observation_dim,
             action_dim=env.action_dim,
@@ -505,6 +516,8 @@ def main() -> None:
         )
     player = None
     if enable_pybullet:
+        from .rock_3D.robot_4dof.pybullet_player import PyBulletRobotPlayer
+
         player = PyBulletRobotPlayer(
             dt=float(pybullet_cfg.get("dt", 1.0 / 240.0)),
             headless=bool(pybullet_cfg.get("headless", headless)),

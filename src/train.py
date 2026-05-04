@@ -17,12 +17,17 @@ import torch
 import yaml
 from plotly.subplots import make_subplots
 
-from .algorithm.lr_schedule import OptimizerLRScheduler, ScalarScheduler
-from .algorithm.ppo import PPOAgent, build_ppo_config
-from .algorithm.sac import SACAgent, build_sac_config
-from .component.buffer import OnPolicyBatch, OnPolicyBuffer, ReplayBatch, ReplayBuffer
+from .rl_robot.algorithms.buffer import (
+    OnPolicyBatch,
+    OnPolicyBuffer,
+    ReplayBatch,
+    ReplayBuffer,
+)
+from .rl_robot.algorithms.lr_schedule import OptimizerLRScheduler, ScalarScheduler
+from .rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
+from .rl_robot.algorithms.sac import SACAgent, build_sac_config
 from .config import load_config
-from .rl_env.train_env import BaseTrainEnv, build_train_env
+from .rl_robot.envs.train_env import BaseTrainEnv, build_train_env
 
 
 def parse_args() -> argparse.Namespace:
@@ -536,9 +541,15 @@ def run_sac_training(
 ) -> None:
     """Train SAC using a replay buffer."""
     train_cfg = config.get("train", {})
-    sac_cfg = build_sac_config(config.get("sac", {}))
+    algorithm_cfg = config.get("algorithm", {})
+    sac_cfg = build_sac_config(
+        {
+            **config.get("sac", {}),
+            "gamma": float(algorithm_cfg.get("gamma", 0.99)),
+        }
+    )
 
-    total_steps = int(config.get("sac", {}).get("total_steps", 50000))
+    total_steps = int(sac_cfg["total_steps"])
     batch_size = int(sac_cfg["batch_size"])
     buffer_size = int(sac_cfg["buffer_size"])
     learning_starts = int(sac_cfg["learning_starts"])
@@ -781,8 +792,12 @@ def main() -> None:
         print(f"Num envs: {env.num_envs}")
 
         if algorithm_name == "ppo":
-            ppo_cfg = build_ppo_config(config.get("ppo", {}))
-            ppo_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+            ppo_cfg = build_ppo_config(
+                {
+                    **config.get("ppo", {}),
+                    "gamma": float(algorithm_cfg.get("gamma", 0.99)),
+                }
+            )
             agent = PPOAgent(
                 observation_dim=env.observation_dim,
                 action_dim=env.action_dim,
@@ -804,8 +819,12 @@ def main() -> None:
                 metrics_history=metrics_history,
             )
         elif algorithm_name == "sac":
-            sac_cfg = build_sac_config(config.get("sac", {}))
-            sac_cfg["gamma"] = float(algorithm_cfg.get("gamma", 0.99))
+            sac_cfg = build_sac_config(
+                {
+                    **config.get("sac", {}),
+                    "gamma": float(algorithm_cfg.get("gamma", 0.99)),
+                }
+            )
             agent = SACAgent(
                 observation_dim=env.observation_dim,
                 action_dim=env.action_dim,
