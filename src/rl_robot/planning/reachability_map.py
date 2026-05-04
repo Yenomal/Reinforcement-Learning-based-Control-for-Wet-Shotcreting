@@ -8,14 +8,14 @@ import argparse
 from contextlib import ExitStack
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 import numpy as np
 import plotly.graph_objects as go
 import torch
+from omegaconf import OmegaConf
 from plotly.subplots import make_subplots
 
-from config import load_config
 from rl_robot.simulation.robot.kinematics import (
     PACKAGED_KINEMATICS_IDENTIFIER,
     RobotKinematics,
@@ -847,9 +847,28 @@ def _resolve_device(requested_device: str | None) -> torch.device:
     return torch.device("cpu")
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_config(args.config)
+def _normalize_reachability_config(cfg: Any) -> Dict[str, Any]:
+    if OmegaConf.is_config(cfg):
+        config = OmegaConf.to_container(cfg, resolve=True)
+    elif isinstance(cfg, Mapping):
+        config = dict(cfg)
+    else:
+        raise TypeError(
+            "Reachability config must be a mapping or an OmegaConf config object."
+        )
+
+    if not isinstance(config, dict):
+        raise ValueError("Reachability config must resolve to a mapping.")
+    return config
+
+
+def run_reachability_map(
+    cfg: Any,
+    *,
+    requested_device: str | None = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    config = _normalize_reachability_config(cfg)
     env_cfg = dict(config.get("env", {}))
     planner_cfg = dict(config.get("planner", {}))
     rl_cfg = dict(config.get("rl", {}))
@@ -857,13 +876,13 @@ def main() -> None:
     planner_cfg["use_reachability_map"] = True
 
     map_path, _ = _map_cache_paths(planner_cfg)
-    if map_path.exists() and not args.force:
+    if map_path.exists() and not force:
         raise FileExistsError(
             f"Reachability map already exists: {map_path}\n"
             "如需覆盖，请增加 --force。"
         )
 
-    device = _resolve_device(args.device)
+    device = _resolve_device(requested_device)
     reachability_map = build_and_save_reachability_map(
         env_cfg=env_cfg,
         planner_cfg=planner_cfg,
@@ -886,6 +905,16 @@ def main() -> None:
         "  Reachable cells: "
         f"{int(reachability_map['reachable_mask'].sum())}"
     )
+    return reachability_map
+
+
+def main() -> None:
+    from hydra import compose, initialize_config_module
+
+    args = parse_args()
+    with initialize_config_module(version_base=None, config_module="rl_robot.conf"):
+        config = compose(config_name="config")
+    run_reachability_map(config, requested_device=args.device, force=args.force)
 
 
 if __name__ == "__main__":

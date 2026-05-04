@@ -17,6 +17,18 @@
 *** 
 # 问题记录
 
+## 当前入口
+
+- 训练入口：`scripts/train.py`
+
+- 评估入口：`scripts/eval.py`
+
+- 可达图构建入口：`scripts/build_reachability_map.py`
+
+- 岩壁环境可视化入口：`scripts/visualize_rock_env.py`
+
+- 这些脚本通过 `rl_robot.conf` 组合 Hydra 配置，并调用包级 API：`rl_robot.training.run_training`、`rl_robot.evaluation.run_evaluation`、`rl_robot.planning.reachability_map.run_reachability_map`、`rl_robot.simulation.visualization.rock_env.run_rock_env_visualization`
+
 ### 算法问题
 
 1. value 使用标准化还是归一化

@@ -1,11 +1,11 @@
 ## 如何使用
 
-- rock_env生成+可视化：uv run python -m src.rock_env.env
+- 岩壁环境生成与可视化：`uv run python scripts/visualize_rock_env.py`
 
-- planner生成起点+终点：uv run python -m src.component.planner
+- 训练：`uv run python scripts/train.py`
 
-- train：uv run python -m rl_robot.training --config path/to/config.yaml（也可以不提供config直接修改./src/config.yaml），训练后看轨迹图xdg-open outputs/runs/xxx/training_curves.html
+- 评估：`uv run python scripts/eval.py eval.checkpoint=outputs/runs/<run>/final.pt`
 
-- eval：uv run python -m src.eval
+- 生成可达区域缓存：`uv run python scripts/build_reachability_map.py --force --device cuda`
 
-- 生成可达区域缓存：uv run python -m src.component.reachability_map --force --device cuda
+- 所有脚本都支持 Hydra overrides，例如：`uv run python scripts/train.py algorithm=sac train.device=cpu`

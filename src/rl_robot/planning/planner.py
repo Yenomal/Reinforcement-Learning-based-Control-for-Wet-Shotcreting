@@ -8,7 +8,6 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from config import load_config
 from rl_robot.simulation.robot.kinematics import RobotKinematics, load_robot_kinematics
 from rl_robot.simulation.tunnel.rock_wall import (
     DELTA,
@@ -238,7 +237,10 @@ def sample_planner_task_from_environment(
 
 def main() -> None:
     """Minimal smoke demo for wall-constrained planner task sampling."""
-    cfg = load_config()
+    from hydra import compose, initialize_config_module
+
+    with initialize_config_module(version_base=None, config_module="rl_robot.conf"):
+        cfg = compose(config_name="config")
     env_cfg = cfg.get("env", {})
     robot_cfg = cfg.get("robot", {})
     planner_cfg = cfg.get("planner", {})

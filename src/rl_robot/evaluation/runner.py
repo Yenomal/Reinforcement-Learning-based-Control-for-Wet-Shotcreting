@@ -329,10 +329,23 @@ def run_evaluation(cfg: Any) -> None:
 
 
 def main() -> None:
-    from config import load_config
+    from hydra import compose, initialize_config_module
+    from omegaconf import OmegaConf
 
     args = parse_args()
-    config = load_config(args.config)
+    overrides: list[str] = []
+    if args.checkpoint is not None:
+        overrides.append(f"eval.checkpoint={args.checkpoint}")
+    if args.episodes is not None:
+        overrides.append(f"eval.episodes={int(args.episodes)}")
+    if args.device is not None:
+        overrides.append(f"train.device={args.device}")
+    if args.headless is not None:
+        overrides.append(f"eval.headless={str(bool(args.headless)).lower()}")
+
+    with initialize_config_module(version_base=None, config_module="rl_robot.conf"):
+        config = compose(config_name="config", overrides=overrides)
+    config = OmegaConf.to_container(config, resolve=True)
     eval_cfg = dict(config.get("eval", {}))
 
     checkpoint_arg = args.checkpoint or eval_cfg.get("checkpoint", "")
