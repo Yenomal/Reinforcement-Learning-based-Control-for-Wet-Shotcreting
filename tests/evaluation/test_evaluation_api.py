@@ -1,9 +1,12 @@
 from pathlib import Path
 
+from hydra import compose, initialize_config_module
+from omegaconf import OmegaConf
+
 from rl_robot.evaluation import run_evaluation
 from rl_robot.evaluation import runner as evaluation_runner
 from rl_robot.evaluation.renderer import EvalRenderer
-from rl_robot.evaluation.runner import build_device
+from rl_robot.evaluation.runner import build_device, load_eval_surface_scene
 
 
 def test_evaluation_module_exports_runtime_symbols() -> None:
@@ -75,3 +78,19 @@ def test_run_evaluation_accepts_plain_dict(monkeypatch, tmp_path: Path) -> None:
     assert captured["evaluate_config"] == config
     assert captured["evaluate_scheduler"] is None
     assert "load_config" not in evaluation_runner.__dict__
+
+
+def test_default_eval_config_loads_packaged_surface_scene() -> None:
+    with initialize_config_module(version_base=None, config_module="rl_robot.conf"):
+        cfg = compose(config_name="config")
+
+    config = OmegaConf.to_container(cfg, resolve=True)
+    assert isinstance(config, dict)
+
+    eval_cfg = dict(config["eval"])
+    scene = load_eval_surface_scene(eval_cfg=eval_cfg, rock_env={})
+
+    assert eval_cfg["digital_env_html"]
+    assert scene["x_grid"].shape == scene["y_grid"].shape
+    assert scene["x_grid"].shape == scene["z_grid"].shape
+    assert scene["x_grid"].shape == scene["color_grid"].shape

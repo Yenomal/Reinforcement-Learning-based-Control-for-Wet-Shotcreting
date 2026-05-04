@@ -16,6 +16,7 @@ from rl_robot.simulation.tunnel.build_tunnel_environment import (
     load_surface_grid,
     plotly_to_pybullet,
 )
+from rl_robot.utils.resources import asset_path
 
 from .checkpoint import (
     build_action_scale_scheduler,
@@ -114,6 +115,14 @@ def _surface_scene_from_html(html_path: Path) -> Dict[str, np.ndarray]:
     }
 
 
+def _is_packaged_eval_surface_asset(html_path_raw: str) -> bool:
+    normalized = html_path_raw.strip()
+    return normalized == "asset:html/rock_environment.html" or normalized in {
+        "./src/rock_3D/rock_environment.html",
+        "src/rock_3D/rock_environment.html",
+    }
+
+
 def load_eval_surface_scene(
     eval_cfg: Dict[str, Any],
     rock_env: Dict[str, Any],
@@ -122,6 +131,13 @@ def load_eval_surface_scene(
     html_path_raw = str(eval_cfg.get("digital_env_html", "")).strip()
     if not html_path_raw:
         return _surface_scene_from_rock_env(rock_env)
+    if _is_packaged_eval_surface_asset(html_path_raw):
+        with asset_path("html/rock_environment.html") as packaged_path:
+            return _surface_scene_from_html(packaged_path)
+    if html_path_raw.startswith("asset:"):
+        asset_name = html_path_raw.removeprefix("asset:")
+        with asset_path(asset_name) as packaged_path:
+            return _surface_scene_from_html(packaged_path)
 
     html_path = Path(html_path_raw)
     if not html_path.exists():
@@ -339,42 +355,7 @@ def main() -> None:
 
     with initialize_config_module(version_base=None, config_module="rl_robot.conf"):
         config = compose(config_name="config", overrides=overrides)
-    config = OmegaConf.to_container(config, resolve=True)
-    eval_cfg = dict(config.get("eval", {}))
-
-    checkpoint_arg = args.checkpoint or eval_cfg.get("checkpoint", "")
-    if not checkpoint_arg:
-        raise ValueError(
-            "No checkpoint provided. Set eval.checkpoint in config or pass --checkpoint."
-        )
-
-    checkpoint_path = Path(checkpoint_arg)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-    device = build_device(args.device)
-    checkpoint = load_checkpoint(checkpoint_path, device)
-    if args.config is None:
-        checkpoint_config = checkpoint["config"]
-        checkpoint_config["eval"] = {
-            **checkpoint_config.get("eval", {}),
-            **eval_cfg,
-        }
-        config = checkpoint_config
-        eval_cfg = dict(config.get("eval", {}))
-
-    eval_cfg["checkpoint"] = str(checkpoint_path)
-    if args.episodes is not None:
-        eval_cfg["episodes"] = int(args.episodes)
-    if args.device is not None:
-        train_cfg = dict(config.get("train", {}))
-        train_cfg["device"] = args.device
-        config["train"] = train_cfg
-    if args.headless is not None:
-        eval_cfg["headless"] = bool(args.headless)
-    config["eval"] = eval_cfg
-
-    run_evaluation(config)
+    run_evaluation(OmegaConf.to_container(config, resolve=True))
 
 
 if __name__ == "__main__":
