@@ -7,3 +7,5 @@ def test_new_repository_layout_exists() -> None:
     assert Path("src/rl_robot/assets").is_dir()
     assert Path("scripts/train.py").is_file()
     assert Path("tools").is_dir()
+    assert not Path("src/rock_env").exists()
+    assert not Path("build").exists()
