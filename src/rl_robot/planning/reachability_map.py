@@ -731,7 +731,7 @@ def load_reachability_map(
         raise FileNotFoundError(
             "Reachability map not found: "
             f"{map_path}\n请先手动生成，例如：\n"
-            "  uv run python -m src.component.reachability_map --force"
+            "  uv run python -m rl_robot.planning.reachability_map --force"
         )
 
     kinematics = load_robot_kinematics(robot_cfg.get("kinematics_path"))
@@ -753,7 +753,7 @@ def load_reachability_map(
             "差异字段:\n"
             f"{diff_text}\n"
             "请重新生成：\n"
-            "  uv run python -m src.component.reachability_map --force"
+            "  uv run python -m rl_robot.planning.reachability_map --force"
         )
     if int(loaded_map["reachable_mask"].sum()) <= 0:
         raise ValueError(
