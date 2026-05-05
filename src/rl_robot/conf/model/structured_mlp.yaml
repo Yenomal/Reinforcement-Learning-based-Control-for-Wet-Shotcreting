@@ -1,0 +1,9 @@
+type: structured_mlp
+hidden_sizes: [256, 256]
+activation: tanh
+joint_hidden_sizes: [128, 128]
+geometry_hidden_sizes: [128, 128]
+prev_action_hidden_sizes: [64, 64]
+time_hidden_sizes: [32, 32]
+action_hidden_sizes: [64, 64]
+fusion_hidden_sizes: [256, 256]

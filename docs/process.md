@@ -17,6 +17,18 @@
 *** 
 # 问题记录
 
+## 当前入口
+
+- 训练入口：`scripts/train.py`
+
+- 评估入口：`scripts/eval.py`
+
+- 可达图构建入口：`scripts/build_reachability_map.py`
+
+- 岩壁环境可视化入口：`scripts/visualize_rock_env.py`
+
+- 这些脚本通过 `rl_robot.conf` 组合 Hydra 配置，并调用包级 API：`rl_robot.training.run_training`、`rl_robot.evaluation.run_evaluation`、`rl_robot.planning.reachability_map.run_reachability_map`、`rl_robot.simulation.visualization.rock_env.run_rock_env_visualization`
+
 ### 算法问题
 
 1. value 使用标准化还是归一化
@@ -77,3 +89,15 @@
 - 我们将会引入FlashSAC的方案，并且确立SAC为基本的baseline，对比组包括SAC、PPO等
 
 - 我们希望能够一次性到达0.003，通过其他方法来缩小采样空间而不是人工成本很高的课程学习
+
+- 我们引入了GPU并行（数据转化为张量进行计算）和CPU并行（进程并行+IPC）—— CPU有增速但是不是很明显，GPU明显很多
+
+- 余弦调度 —— for 学习率（lr，以及SAC的三个lr）、探索度（log_std、target_entropy）
+
+- action限制调度，使用近似余弦调度，开始维持一段时间1，然后余弦调度，最后保持一个小动作0.025（hold_fraction版本，适配于整个cosine调度器可以直接用）
+
+- 增大policy模型，当前的batch已经比较大了，上FlashSAC那一套两边都能稳定
+
+- 进行消融实验后发现：1）MLP输出不了小步伐、2）最后成功率可能是随机噪声带入的（调小ppo最终的policy输出方差）
+
+PS. 现在看来PPO这种方法最大的特色就是他稳定，稳定就可以上大一点的模型，而且比较适合并行，所以提高模型的收益要远大于使用SAC这种针对性算法的收益

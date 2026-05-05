@@ -1,0 +1,8 @@
+enable: true
+headless: false
+dt: 0.0041666667
+show_tunnel: true
+show_plane: false
+robot_position: [0.0, 0.0, 0.45]
+robot_yaw_deg: 90.0
+tunnel_position: [0.0, 0.0, 0.0]

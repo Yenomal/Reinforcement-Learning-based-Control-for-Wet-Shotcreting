@@ -1,413 +1,291 @@
 # 算法记录
 
-本文档用于记录当前项目中的强化学习算法实现状态，重点分析当前正在使用的 `PPO`，并为后续的 `SAC` 预留位置。
+本文档记录当前 RL 分支的真实实现状态。当前版本以 `TorchMathEnv + GPU 并行训练 + 余弦学习率调度` 为准。
 
-当前代码入口：
+## 代码入口
 
-- 环境：`src/rl_env/math_env.py`
+- 经典环境：`src/rl_env/math_env.py`
+- Torch 批量环境：`src/rl_env/torch_math_env.py`
+- 训练环境统一入口：`src/rl_env/train_env.py`
+- Torch 批量运动学：`src/rock_3D/robot_4dof/torch_kinematics.py`
 - PPO：`src/algorithm/ppo.py`
 - SAC：`src/algorithm/sac.py`
+- 学习率调度：`src/algorithm/lr_schedule.py`
 - Buffer：`src/component/buffer.py`
 - 训练入口：`src/train.py`
 - 评估入口：`src/eval.py`
 
-## 当前阶段结论
+## 当前版本结论
 
-如果只看“算法基础”这一层，当前最关键的事实有三条：
+当前系统可以概括为：
 
-1. 当前环境已经是纯 3D 点控制环境，observation、action、reward 都不再依赖 `uv` 作为真状态。
-2. 当前 reward 采用“势能函数差分 + 到达奖励”的最小化设计，核心项是 `d_{t-1} - gamma * d_t`。
-3. PPO 主体实现保持不变，因此这一阶段的重点是环境定义和 reward 设计，而不是算法框架本身。
+1. 任务是 4 自由度机械臂末端到目标点的跟踪控制。
+2. 环境同时保留 `classic` 与 `torch` 两个训练后端。
+3. `torch` 后端支持批量环境，主要目的是提高 GPU 利用率与训练吞吐。
+4. PPO 与 SAC 共用同一套训练入口与同一套学习率调度接口。
+5. reward 当前采用单主项势函数差分，不依赖成功大奖励。
 
-换句话说，现在 PPO 本身不是空的，而且它当前学习的问题已经可以概括为：
+## 当前环境定义
 
-- 输入：3D 工作点位置
-- 控制：3D 点增量动作
-- 目标：最小化到目标点的 3D 距离
+### observation
 
-它仍然不是最终的机械臂控制任务，但已经是一个逻辑自洽的 3D 基础环境。
+当前 observation 维度是 `18`，动作维度是 `4`。
 
-## 当前环境与 reward 状态
+observation 由以下部分拼接：
 
-### 当前 observation 是什么
-
-`MathEnv` 当前的 observation 维度是 `13`，动作维度是 `3`。
-
-当前 observation 由以下部分拼接而成：
-
-- `current_point_norm`：当前 `retreated_point` 的归一化 3D 坐标，3 维
-- `goal_point_norm`：目标 `retreated_point` 的归一化 3D 坐标，3 维
-- `delta_point_norm`：当前点到目标点的归一化 3D 相对位移，3 维
-- `prev_action`：上一步 3D 动作，3 维
-- `step_ratio`：当前步数占最大步数的比例，1 维
+- `q_norm`：关节角归一化，4 维
+- `current_point_norm`：当前末端点归一化坐标，3 维
+- `goal_point_norm`：目标点归一化坐标，3 维
+- `delta_point_norm`：目标点相对当前点的归一化位移，3 维
+- `prev_action`：上一时刻动作，4 维
+- `step_ratio`：步数比例，1 维
 
 即：
 
 ```text
 obs = [
-  current_x, current_y, current_z,
+  q0, q1, q2, q3,
+  cur_x, cur_y, cur_z,
   goal_x, goal_y, goal_z,
   delta_x, delta_y, delta_z,
-  prev_action_x, prev_action_y, prev_action_z,
+  prev_a0, prev_a1, prev_a2, prev_a3,
   step_ratio
 ]
 ```
 
-这里的 `point` 目前使用的是沿法向回退后的 `retreated_point`，原因是它比直接贴在壁面上的 `surface_point` 更接近后续机械臂末端的工作点表达。
+### 动作空间
 
-当前 observation 的生成流程是：
+当前动作是 4 维连续动作，对应各关节的归一化增量命令。
 
-1. 环境内部直接维护真实的 `current_point / goal_point`
-2. 对这两个 3D 点应用 observation-side 传感器噪声
-3. 计算当前点、目标点、相对位移
-4. 用环境级别的 3D 包围盒做 min-max 归一化
-
-虽然环境内部还可以查询更多 3D 几何信息，例如：
-
-- `surface_point`
-- `retreated_point`
-- `normal`
-
-但当前真正进入 policy observation 的只有 3D 点位本身，还没有加入：
-
-- 局部法向
-- joint states
-- joint deltas
-- 更高层的几何上下文
-
-因此，这一版 observation 可以视为“3D 点 observation 第一版”。
-
-### 当前动作空间是什么
-
-当前动作是 3 维连续动作，含义是对 3D 点位的增量控制，而不是关节角控制。
-
-环境实际执行逻辑是：
+环境执行逻辑为：
 
 ```text
-proposed_point = current_point + clipped_action * action_scale
+bounded_action = clip(action, -1, 1)
+q_next = clip_joint_limits(q_current + bounded_action * max_joint_delta)
+```
+
+其中 `max_joint_delta_deg` 来自配置文件，表示每步允许的最大关节变化量。
+
+### 当前 reward
+
+当前 reward 只保留主奖励项：
+
+```text
+r_t = k * [phi(d_t) - phi(d_{t+1})]
 ```
 
 其中：
 
-- 策略输出原始连续动作
-- 环境内部把动作裁剪到 `[-1, 1]`
-- 再乘以 `action_scale`
+- `k = progress_reward_weight`
+- `d_t = ||goal_point - current_point||_2`
+- `phi(d) = log(1 + d / goal_tolerance)`
 
-按当前配置，`action_scale = 0.20`，所以每一步在每个轴向上的最大位移量级约为 `0.20`。
+代码位置：
 
-### 当前 reward 的真实公式
+- `src/rl_env/math_env.py`
+- `src/rl_env/torch_math_env.py`
 
-环境代码中的 reward 由五部分组成：
+当前其它 reward 参数如：
 
-```text
-reward =
-  progress_reward
-  - step_penalty
-  - action_penalty
-  - smoothness_penalty
-  - boundary_penalty
+- `success_reward`
+- `step_penalty`
+- `action_l2_weight`
+- `action_smoothness_weight`
+- `boundary_penalty`
 
-if success:
-  reward += success_reward
-```
+仍保留在配置中，便于后续消融，但当前默认不参与实际 reward 主体。
 
-各项定义如下：
+### 终止条件
 
-- `progress_reward = progress_reward_weight * (previous_goal_distance - gamma * goal_distance)`
-- `step_penalty = step_penalty`
-- `action_penalty = action_l2_weight * ||action||^2`
-- `smoothness_penalty = action_smoothness_weight * ||action - prev_action||^2`
-- `boundary_penalty = boundary_penalty if boundary_hit else 0`
-- `success = goal_distance <= goal_tolerance`
+当前 episode 终止规则：
 
-其中 `goal_distance` 目前是：
+- 成功：`goal_distance <= goal_tolerance`
+- 截断：`current_step >= max_episode_steps`
 
-```text
-goal_distance = ||goal_point - current_point||_2
-```
+## 两种训练环境后端
 
-这里已经是 3D 欧氏距离，不再经过 `uv`。
+### `classic`
 
-这里的 `gamma` 不是单独新增的 reward 超参数，而是直接复用算法里的折扣因子 `algorithm.gamma`。这样做有两个目的：
+`classic` 后端直接使用 `MathEnv`。
 
-1. 尽量减少 reward 侧新增的手工参数。
-2. 让 reward 更接近标准的 potential-based shaping 形式。
+特点：
 
-### 当前配置下，reward 实际上已经简化成什么
+- 逻辑最直观
+- 调试方便
+- 适合验证 reward、状态与训练流程正确性
+- 环境步进主要依赖 Python + NumPy
 
-按 `src/config.yaml` 当前配置，参数是：
+### `torch`
 
-- `progress_reward_weight = 2.0`
-- `success_reward = 80.0`
-- `gamma = 0.99`
-- `step_penalty = 0.0`
-- `action_l2_weight = 0.0`
-- `action_smoothness_weight = 0.0`
-- `boundary_penalty = 0.0`
-- `goal_tolerance = 0.10`
+`torch` 后端使用 `TorchMathEnv`。
 
-这意味着当前真正生效的 reward 几乎就是：
+特点：
 
-```text
-reward = 2.0 * (d_prev - 0.99 * d_cur) + 80.0 * I(d_cur <= 0.10)
-```
+- 采用批量状态张量
+- FK、reward、observation 构造都在 Torch 中完成
+- 更适合高 `num_envs` 并行训练
+- 与 `TorchRobotKinematics` 配合，提高 GPU 利用率
 
-也就是说：
+当前 `TorchMathEnv` 已经张量化的部分包括：
 
-- 主奖励来自势能函数差分
-- 当前距离项会乘上折扣因子 `gamma`
-- 成功进入阈值区域时额外给一个较大的终点奖励
-- 没有每步惩罚
-- 没有动作幅度惩罚
-- 没有动作变化惩罚
-- 没有边界惩罚
+- 关节状态
+- FK
+- goal distance
+- reward 计算
+- observation 拼接
 
-### 当前 reward 的问题
+当前仍在 CPU 上的部分主要是：
 
-这版 reward 的优点是非常克制，比较符合当前阶段的三条原则：
+- reset 时的任务采样
+- 基于现有 planner 的目标生成逻辑
 
-1. 尽量减少人工设计的 dense reward。
-2. 尽量不额外引入新的手调参数。
-3. 更偏向稳定和低方差，而不是追求复杂 shaping。
-
-但它对于你现在要做的“算法基础阶段”已经暴露出明显问题：
-
-1. 它虽然简单，但仍然只有“到达目标”这一种任务语义，还没有编码贴壁、姿态、法向等更强约束。
-2. 当前默认没有控制正则项，因此终点附近的稳定性仍然主要依赖势能函数本身和 PPO 的统计稳定性。
-3. 如果后续任务变得更复杂，单靠这一项 potential reward 可能不够表达任务需求。
-4. 由于动作仍然是连续采样并在环境内裁剪，策略动作和执行动作仍然存在轻微不一致。
-
-从任务定义角度说，当前 reward 已经是一个合理的 3D 基础版 reward，但还不是最终任务的完整 reward。
+因此当前版本是“环境步进主路径 GPU 化”，不是完全 GPU-native 的仿真系统。
 
 ## PPO 当前实现
 
-### PPO 总体结构
+### 结构
 
-当前 PPO 使用的是典型的 `actor-critic` 结构，但实现上比较轻量。
+PPO 使用标准 actor-critic 结构：
 
-- actor：输入 observation，输出动作分布均值
-- critic：输入 observation，输出状态价值
-- exploration：使用高斯分布采样动作
-- buffer：使用 on-policy rollout buffer
-- advantage：使用 GAE
-- policy objective：使用 clipped surrogate objective
+- actor：输出动作分布均值
+- critic：输出状态价值
+- `log_std`：状态无关的可训练参数向量
 
-当前训练入口默认使用 PPO，因为 `algorithm.name = ppo`。
-
-### PPO 网络结构
-
-PPO 使用两个独立的 MLP：
-
-- `actor`
-- `critic`
-
-当前配置：
-
-- hidden sizes：`[256, 256]`
-- activation：`tanh`
-- action log std 初始值：`-2.0`
-
-这意味着初始标准差约为：
-
-```text
-std = exp(-2.0) ≈ 0.1353
-```
-
-当前 actor 不是输出 `mean + log_std`，而是：
-
-- 网络只输出 `mean`
-- `log_std` 是一个独立的、与状态无关的可训练参数向量
-
-因此，当前 PPO 的动作分布是：
+动作分布：
 
 ```text
 pi(a|s) = Normal(mean(s), std)
+action = tanh(sample)
 ```
 
-其中 `std` 在每个动作维度上是全局共享的，不依赖状态。
+### 默认超参数
 
-### 这一设计的特点
+默认超参数在 `src/algorithm/ppo.py` 中定义。
 
-优点：
+当前默认设置包括：
 
-- 简单稳定
-- 参数少
-- 适合当前这种低维连续控制任务
-
-局限：
-
-- 不同状态下探索强度无法自适应
-- 当任务升级成 3D 点 observation 或关节空间后，这种固定方差可能不够灵活
-
-### PPO 采样流程
-
-每次 PPO update 之前，训练脚本会先采集一段 on-policy rollout。
-
-当前配置：
-
-- `rollout_steps = 2048`
-- `total_updates = 600`
-
-所以总交互步数约为：
-
-```text
-600 * 2048 = 1,228,800
-```
-
-采样过程如下：
-
-1. 从当前 observation 构造 tensor
-2. 调用 `agent.act(obs)`
-3. actor 给出高斯分布，采样出 action
-4. 同时得到该 action 的 `log_prob`
-5. critic 估计当前状态 value
-6. 将 `(obs, action, log_prob, reward, done, value)` 写入 `OnPolicyBuffer`
-7. rollout 结束后，补上 `next_observation` 和 `next_done`
-
-这里的 buffer 是严格的 on-policy buffer，不会跨 update 复用旧数据。
-
-### PPO 的 value 处理
-
-当前实现保留了 `value target normalization` 的能力，但默认配置已经关闭。
-
-代码中实现了 `RunningValueNormalizer`，会维护：
-
-- value target 的运行均值
-- value target 的运行方差
-
-在训练时：
-
-1. 先用原始 reward 和原始 value 计算真实 return
-2. 再用运行统计量把 return 归一化
-3. critic 实际拟合的是归一化后的 value target
-4. 在采样和评估时，再把 critic 输出反归一化
-
-这一点的目的，是减轻 reward 量级变化带来的 value training 不稳定。
-
-当前默认 reward 已经比较克制，因此这套机制先作为可选项保留，而不再作为默认配置。
-
-### PPO 的 advantage 计算
-
-当前实现使用 GAE。
-
-记：
-
-- `r_t`：第 `t` 步 reward
-- `V(s_t)`：critic 估计的状态价值
-- `done_t`：第 `t` 步 transition 是否终止
-- `gamma`：折扣因子
-- `lambda`：GAE 参数
-
-则当前实现对应：
-
-```text
-delta_t = r_t + gamma * V(s_{t+1}) * (1 - done_t) - V(s_t)
-A_t = delta_t + gamma * lambda * (1 - done_t) * A_{t+1}
-R_t = A_t + V(s_t)
-```
-
-当前配置：
-
-- `gamma = 0.99`
+- `lr = 3e-4`
 - `gae_lambda = 0.95`
-
-这是 PPO 中非常常见的一组设置。
-
-优势函数在进入 PPO loss 前还会做一次标准化：
-
-```text
-A <- (A - mean(A)) / (std(A) + 1e-8)
-```
-
-如果 reward 设计比较粗糙，优势标准化会一定程度上缓解尺度问题，但不能从根本上修复 reward 定义本身不合理的问题。
-
-### PPO 的策略损失
-
-当前策略损失采用标准的 clipped objective。
-
-记：
-
-- `old_log_prob`：采样时旧策略下动作的对数概率
-- `new_log_prob`：更新时新策略下同一动作的对数概率
-- `ratio = exp(new_log_prob - old_log_prob)`
-
-则策略损失为：
-
-```text
-L_policy = -mean(min(ratio * A, clip(ratio, 1-eps, 1+eps) * A))
-```
-
-当前配置中：
-
-- `clip_ratio = 0.15`
-
-这意味着 PPO 会限制单次更新中策略偏离旧策略过大。
-
-### PPO 的 value loss
-
-当前 value loss 是标准均方误差：
-
-- 如果开启 value target normalization，则拟合归一化 return
-- 否则拟合原始 return
-
-当前配置中：
-
+- `clip_ratio = 0.2`
 - `value_coef = 0.5`
+- `entropy_coef = 0.0`
+- `max_grad_norm = 0.5`
+- `rollout_steps = 2048`
+- `update_epochs = 10`
+- `minibatch_size = 64`
+- `normalize_advantages = true`
 - `normalize_value_targets = false`
 
-### PPO 的 entropy bonus
+### 训练方式
 
-当前实现支持 entropy regularization：
+PPO 每次先收集一段 on-policy rollout，再统一更新。
+
+在 `torch` 后端下：
+
+- 目标总 rollout batch 大小仍由 `rollout_steps` 控制
+- 每个环境实际 rollout 长度为：
 
 ```text
-loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+rollout_steps_per_env = rollout_steps / num_envs
 ```
 
-但是当前配置：
+所以高并行时每个 env 每轮只跑较短时间，但总 batch 大小保持不变。
 
-- `entropy_coef = 0.0`
+### 梯度裁剪
 
-所以当前实际上没有额外的熵奖励。
+PPO 当前保留梯度裁剪：
 
-这意味着探索主要来自高斯采样本身，而不是额外的 entropy encouragement。
+```text
+clip_grad_norm_(actor + critic + log_std, max_grad_norm)
+```
 
-### PPO 的优化细节
+## SAC 当前实现
 
-当前优化器是一个 Adam，统一优化：
+### 结构
 
-- actor 参数
-- critic 参数
-- `log_std`
+SAC 当前采用：
 
-当前配置：
+- 一个 actor
+- 两个 critic
+- 两个 target critic
+- 一个自适应温度参数 `alpha`
 
-- `lr = 1e-5`
-- `update_epochs = 5`
-- `minibatch_size = 512`
-- `max_grad_norm = 0.5`
+动作分布采用 tanh-squashed Gaussian。
 
-每次 update 的流程是：
+### 默认超参数
 
-1. 用 rollout 数据计算 returns 和 advantages
-2. 打乱样本顺序
-3. 按 minibatch 训练
-4. 训练 `5` 个 epoch
-5. 每个 minibatch 上同时优化 policy loss 和 value loss
-6. 做梯度裁剪
+默认超参数在 `src/algorithm/sac.py` 中定义。
 
-### 关于 KL
+当前默认设置包括：
 
-当前代码会记录一个 `approx_kl` 指标，但没有使用它做：
+- `actor_lr = 3e-4`
+- `critic_lr = 3e-4`
+- `alpha_lr = 3e-4`
+- `tau = 0.005`
+- `batch_size = 256`
+- `buffer_size = 1_000_000`
+- `learning_starts = 100`
+- `updates_per_step = 1`
+- `log_interval_steps = 65536`
+- `alpha_init = 1.0`
+- `target_entropy = auto`
 
-- early stopping
-- adaptive clip
-- adaptive learning rate
+### 训练方式
 
-因此它目前只是监控指标，不参与训练控制。
+SAC 是 off-policy：
 
-### PPO 的训练日志与保存
+1. 环境交互得到 transition
+2. 写入 replay buffer
+3. 从 replay buffer 随机采样 batch
+4. 更新 twin critic、actor、alpha
 
-训练过程中会记录：
+在 `torch` 后端下：
+
+- 一次环境步进会并行得到 `num_envs` 条 transition
+- 当前实现会在每次 batched 环境步进后执行固定次数的参数更新：
+
+```text
+updates = updates_per_step
+```
+
+也就是说，`updates_per_step` 表示“每次 batched 采样轮次更新多少次”，不再随 `num_envs` 线性放大。
+
+### 梯度裁剪
+
+SAC 当前默认没有显式梯度裁剪。
+
+## 统一余弦学习率调度
+
+当前 PPO 与 SAC 已统一接入 `OptimizerLRScheduler`。
+
+配置项位于：
+
+```yaml
+train:
+  lr_schedule: cosine
+  lr_min_ratio: 0.1
+```
+
+含义：
+
+- `lr_schedule = none`：不调度
+- `lr_schedule = cosine`：余弦退火
+- `lr_min_ratio`：最终学习率相对初始学习率的比例
+
+即：
+
+```text
+lr_final = lr_initial * lr_min_ratio
+```
+
+当前调度覆盖：
+
+- PPO：`lr`
+- SAC：`actor_lr`、`critic_lr`、`alpha_lr`
+
+## 当前日志
+
+训练日志当前会输出：
 
 - `mean_reward`
 - `mean_length`
@@ -415,214 +293,21 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - `mean_min_goal_distance`
 - `policy_loss`
 - `value_loss`
-- 以及 PPO update 返回的其他统计量
+- 当前学习率
 
-会保存：
+当前日志仍是 episode-level 聚合为主，适合低并行或中等并行设定。
 
-- `final.pt`
-- `metrics.csv`
-- `training_curves.html`
+## 当前主要问题
 
-### PPO 的评估方式
+1. `TorchMathEnv` 仍然在 reset 阶段依赖 CPU planner，GPU 并行优势还没有完全释放。
+2. 高并行下 PPO 的 episode 统计会变稀疏，需要更谨慎解读日志。
+3. SAC 的吞吐增益目前明显低于 PPO，后续可以单独作为研究目标。
+4. 当前 reward 已经足够干净，但仍然只是点到点跟踪，还没有纳入姿态、法向或贴壁语义。
+5. 当前 batch 环境的速度已经显著提升，但 GPU 利用率仍未完全吃满。
 
-评估时不再采样，而是直接使用 actor 输出均值作为确定性动作：
+## 下一步建议
 
-```text
-action = actor(observation)
-```
-
-然后把该动作送入环境执行。
-
-所以：
-
-- 训练：高斯采样
-- 评估：均值动作
-
-这也是 PPO 连续控制任务里的常见做法。
-
-## 当前 PPO 与环境之间最值得注意的实现细节
-
-这部分非常重要，因为它直接关系到你下一阶段要不要先改环境定义。
-
-### 1. PPO 当前已经是纯 3D 点控制环境
-
-这是当前最大的事实。
-
-当前环境中：
-
-- observation 用的是 3D 点位状态
-- reward 用的是 3D 距离势能函数
-- success 用的是 3D 距离阈值
-- action 控制的是 3D 点增量
-
-所以现在 PPO 的收敛，最多只能说明：
-
-“在一个自由 3D 点控制环境中，这个策略能够学会逼近目标点。”
-
-它还不能说明：
-
-“在真实岩壁约束或机械臂关节空间中，这个策略能学会稳定控制。”
-
-### 2. 当前 reward 与当前阶段目标是一致的
-
-在当前阶段，我们的目标是：
-
-- 先建立一个稳定、简单、低方差的 3D 基础环境
-- 尽量少用人工 shaping
-- 让 reward 更接近势能函数形式
-
-从这个标准看，当前 reward 是和当前阶段目标一致的。
-
-后续如果再往前走，真正需要补的不是“再加更多 dense reward”，而是：
-
-- 岩壁约束
-- 表面投影
-- 关节空间动作
-- 更完整的任务语义
-
-### 3. 当前 action 存在“策略动作”和“环境执行动作”不完全一致的问题
-
-这是当前 PPO 实现里最值得优先记录的问题。
-
-当前流程是：
-
-1. PPO 从高斯分布采样出原始 action
-2. buffer 记录的是这个原始 action
-3. PPO 训练时也是对这个原始 action 计算 log_prob
-4. 但是环境执行前，会先把 action 裁剪到 `[-1, 1]`
-
-这会导致：
-
-- 策略认为自己执行的是 `a`
-- 环境实际执行的是 `clip(a, -1, 1)`
-
-当 action 超出范围时，policy gradient 对应的并不是环境真实执行的动作。
-
-这会带来两个问题：
-
-1. 梯度估计与环境真实动力学不完全匹配。
-2. 当策略经常输出越界动作时，环境会进入“饱和控制”，学习信号会被扭曲。
-
-这是一个很实在的实现问题，后续不论你继续用 PPO 还是做关节动作空间，都建议修。
-
-更合理的做法通常有两种：
-
-- 方案 A：策略输出后先 `tanh` 压到 `[-1, 1]`
-- 方案 B：环境不再二次裁剪，而是保证策略采样空间本身合法
-
-### 4. 当前没有独立的 observation normalization 模块
-
-当前 observation 已经不是 `uv`，而是 3D 点位。
-
-目前环境内部做的是一种静态归一化：
-
-- 基于隧道点云包围盒
-- 加上回退距离余量
-- 将 3D 点位压到大致接近 `[-1, 1]`
-
-这对当前版本已经够用，但它仍然不是独立的、数据驱动的 observation normalization。
-
-但如果下一阶段 observation 变成：
-
-- 3D current point
-- 3D goal point
-- 3D delta
-- joint states
-- normal
-
-那么不同维度的量纲差异会明显增大。
-
-到时候如果还不做 observation normalization，PPO 训练稳定性可能会下降。
-
-### 5. 当前 reward 是“极简势能函数”而不是“行为雕刻”
-
-当前这版 reward 的刻意选择是：
-
-- 主体只保留势能函数差分
-- 到达时给终点奖励
-- 其余控制正则默认可以关闭
-
-这意味着它的优先级是：
-
-- 先保证 reward 逻辑足够干净
-- 先保证训练统计稳定
-- 先减少手工 shaping 对策略行为的先验绑定
-
-它的代价也很明确：
-
-- 不会直接鼓励漂亮轨迹
-- 不会直接鼓励终点附近停稳
-- 不会直接约束与岩壁的几何关系
-
-这不是缺陷，而是当前阶段的有意取舍。
-
-## 对下一阶段的算法建议
-
-如果下一阶段继续做“更接近真实任务的 3D 控制”，我的建议是：
-
-### 保持 PPO 主体暂时不动
-
-当前 PPO 的这些部件都可以先保留：
-
-- actor-critic 结构
-- GAE
-- clipped objective
-- advantage normalization
-- value normalization
-
-也就是说，下一阶段的主战场不在 `src/algorithm/ppo.py`，而在 `src/rl_env/math_env.py`。
-
-### observation 已完成基础版，后续按需增强
-
-当前 observation 已经切成：
-
-- current end-effector point (3)
-- goal point (3)
-- delta point (3)
-- previous action (3)
-- step ratio (1)
-
-如果后面开始切到关节空间，再逐步加入：
-
-- joint angles
-- joint angle deltas
-- local surface normal
-
-### reward 先保持极简，再按任务升级
-
-当前 reward 已经是一个比较符合当前阶段目标的版本：
-
-- 主奖励：`d_{t-1} - gamma * d_t`
-- 终点奖励：到达成功阈值后给 `success_reward`
-
-如果未来确实发现训练不稳定，再优先考虑：
-
-- 统计层面的归一化
-- 学习率/clip/entropy 调度
-- 轻量级正则
-
-而不是马上堆更多人工 reward。
-
-### 在继续做复杂任务前，优先修 action clipping 问题
-
-这一步和 reward 无关，但很值得尽快处理，因为它会影响 PPO 学习信号的正确性。
-
-## SAC 占位
-
-本节为后续 `SAC` 分析预留。
-
-后续建议补充的内容包括：
-
-- 当前 `SACAgent` 的 actor / twin critic 结构
-- tanh-squashed Gaussian policy
-- replay buffer 采样流程
-- target critic soft update
-- alpha 自动调节
-- 与 PPO 在本项目中的适用性对比
-- 对 reward 稀疏性、样本效率、动作空间设计的敏感性分析
-
-当前状态：
-
-- `src/algorithm/sac.py` 已有基本实现
-- `src/train.py` 已有训练入口
-- 但本项目当前阶段仍以 PPO 为主要分析对象
+1. 继续用 `torch` 后端测试不同 `num_envs` 下的吞吐与收敛曲线。
+2. 比较 PPO 与 SAC 在 `classic` / `torch` 两种后端下的 wall-clock 效率。
+3. 如果后续继续追求吞吐，可优先考虑把 reset / task sampling 也 torch 化。
+4. reward 侧暂时保持主奖励干净，优先观察不同精度阈值下的收敛情况。

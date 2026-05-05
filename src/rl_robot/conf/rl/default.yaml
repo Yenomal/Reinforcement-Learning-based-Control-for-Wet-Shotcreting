@@ -1,0 +1,18 @@
+env_name: math_env
+max_episode_steps: 200
+initial_configuration_deg: [0.0, 0.0, 0.0, 0.0]
+success_tolerance: 0.003
+reward_distance_scale: 1
+max_joint_delta_deg: [4.0, 4.0, 4.0, 4.0]
+action_scale_schedule:
+  enable: true
+  schedule: cosine
+  start_ratio: 0.5
+  end_ratio: 0.5
+workspace_margin: 0.25
+progress_reward_weight: 1.0
+success_reward: 0.0
+step_penalty: 0.0
+action_l2_weight: 0.0
+action_smoothness_weight: 0.0
+boundary_penalty: 0.0
