@@ -4,3 +4,7 @@
 
 # outputs
 outputs/
+
+# AI
+.codex/
+.superpowers/
