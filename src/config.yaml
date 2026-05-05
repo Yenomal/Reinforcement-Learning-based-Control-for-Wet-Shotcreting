@@ -14,8 +14,8 @@ robot:
 planner:
   seed: 42                          # 任务随机种子
   spray_angle_range_deg: [-60.0, 60.0] # 以拱顶为 0 度，湿喷区域角度范围
-  spray_standoff_distance: 1.5        # 从壁面沿法向向内投影的目标距离
-  axial_margin_ratio: 0.05          # 隧道轴向两端留白比例，避免贴边采样
+  spray_standoff_distance: 0.5        # 从壁面沿法向向内投影的目标距离
+  axial_margin_ratio: 0.1          # 隧道轴向两端留白比例，避免贴边采样
   tunnel_axial_scale: 1.5           # 旧数学隧道轴向到 PyBullet 世界坐标的缩放
   use_reachability_map: true        # 是否加载手动生成的数值 IK 可达图
   reachability_map_path: outputs/reachability/reachability_map.npz # 可达图缓存
@@ -31,7 +31,7 @@ planner:
 # 扰动参数
 disturbance:
   sensor_noise:
-    enable: false                 # 是否开启传感器噪声
+    enable: true                 # 是否开启传感器噪声
     current_point_step_std: 0.01 # 当前 3D 点每步高斯噪声
     current_point_bias_std: 0.02 # 当前 3D 点每局固定偏置
     goal_point_step_std: 0.0     # 目标 3D 点每步高斯噪声
@@ -52,7 +52,7 @@ rl:
     end_ratio: 0.5
   workspace_margin: 0.25     # FK 采样工作空间边界扩展
   progress_reward_weight: 1.0 # k in r_t = k * [phi(d_t) - phi(d_{t+1})]
-  success_reward: 0.0        # 当前纯主奖励实验未启用
+  success_reward: 1.0        # 当前纯主奖励实验未启用
   step_penalty: 0.00         # 当前纯主奖励实验未启用
   action_l2_weight: 0.000    # 当前纯主奖励实验未启用
   action_smoothness_weight: 0.00 # 当前纯主奖励实验未启用
@@ -77,7 +77,23 @@ algorithm:
 
 # PPO 专有参数
 ppo:
-  total_updates: 200         # 总更新次数，其余超参数见 src/algorithm/ppo.py
+  total_updates: 400         # 总更新次数，其余超参数见 src/algorithm/ppo.py
+  std:
+    mode: cosine_schedule    # cosine_schedule / cosine_then_success_rate_triggered / success_rate_triggered / global_fixed / global_learned
+    global_log_std: -1.0     # 全局初值或固定值
+    min_log_std: -10.0        # 允许下降到的最小 log_std
+    switch_update: 150       # 组合模式切到 success_trigger 的轮次
+    schedule:
+      schedule: cosine       # cosine 或组合模式前半段使用
+      start_log_std: -1.0    # 调度起点
+      end_log_std: -3.67      # 调度终点或切换前目标 -3
+    success_trigger:
+      success_threshold: 0.90 # EMA 成功率阈值
+      log_std_step: -0.01      # 每次下降的 log_std 步长
+      ema_alpha: 1.0         # 成功率 EMA 平滑系数
+      patience_updates: 20    # 连续满足多少轮才下降
+      cooldown_updates: 0    # 每次下降后的固定冷却轮数
+      min_episodes_in_window: 0 # 当前窗口 episode 太少时不允许触发
 
 # SAC 专有参数
 sac:
@@ -89,16 +105,23 @@ train:
   device: cuda               # 训练设备，若无 CUDA 会自动回退到 CPU
   env_backend: torch         # 训练环境后端：classic 或 torch
   num_envs: 256              # torch 后端下的批量环境数量
-  lr_schedule: cosine        # 学习率调度：none 或 cosine
+  deterministic_eval:
+    enable: true            # 是否开启训练期确定性评估
+    interval_updates: 20     # 每隔多少个 update 评估一次
+    episodes: 256            # 每次评估多少个 episode
+    num_envs: 256            # 评估环境并行数量
+    seed: 123                # 评估固定种子
+    backend: torch           # 评估环境后端
+  lr_schedule: none        # 学习率调度：none 或 cosine
   lr_min_ratio: 0.1          # 余弦退火的最低学习率比例
   log_interval: 1            # 终端打印间隔
   runs_root: outputs/runs    # 训练输出根目录
   resume: false               # 是否恢复训练进度
-  checkpoint: "" # 初始化或续训权重路径
+  checkpoint: "outputs/runs/ppo_math_env_torch_20260426_125922/final.pt" # 初始化或续训权重路径
 
 # 评估参数
 eval:
-  checkpoint: "./outputs/runs/sac_direct_0.1/final.pt"      # 默认权重路径
+  checkpoint: "./outputs/runs/best/final.pt"      # 默认权重路径
   episodes: 5         # 评估回合数
   seed: 123           # 评估随机种子
   headless: false     # 是否关闭可视化

@@ -9,3 +9,7 @@
 - eval：uv run python -m src.eval
 
 - 生成可达区域缓存：uv run python -m src.component.reachability_map --force --device cuda
+
+- 生成3D岩壁：uv run python -m src.rock_3D.tools.build_tunnel_environment.py
+
+- 切换新的岩壁环境：生成新的html，pybullet同步、可达图同步

@@ -33,7 +33,7 @@ except ImportError:
 
 
 # Tunnel geometry
-R_BASE = 3.5
+R_BASE = 2.5
 L_TUNNEL = 2.0
 
 # Surface parameter bounds
