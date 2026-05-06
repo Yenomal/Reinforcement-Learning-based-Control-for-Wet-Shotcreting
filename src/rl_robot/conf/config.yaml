@@ -12,6 +12,22 @@ defaults:
 
 ppo:
   total_updates: 200
+  std:
+    mode: cosine_schedule
+    global_log_std: -1.0
+    min_log_std: -10.0
+    switch_update: 150
+    schedule:
+      schedule: cosine
+      start_log_std: -1.0
+      end_log_std: -3.67
+    success_trigger:
+      success_threshold: 0.90
+      log_std_step: -0.01
+      ema_alpha: 1.0
+      patience_updates: 20
+      cooldown_updates: 0
+      min_episodes_in_window: 0
 
 sac:
   total_steps: 2_000_000

@@ -1,8 +1,16 @@
+import hashlib
+import struct
+import sys
 from pathlib import Path
 
 import pytest
 
+SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 from rl_robot.utils.resources import asset_path
+from rl_robot.simulation.tunnel.build_tunnel_environment import load_surface_grid
 
 
 def test_default_kinematics_asset_is_packaged() -> None:
@@ -15,6 +23,15 @@ def test_default_html_asset_is_packaged() -> None:
     with asset_path("html/rock_environment.html") as path:
         assert path.suffix == ".html"
         assert path.is_file()
+        grid = load_surface_grid(path)
+
+    semantic_parts = [str(grid.rows).encode(), str(grid.cols).encode()]
+    for values in (grid.x, grid.y, grid.z, grid.surfacecolor):
+        semantic_parts.append(struct.pack("<" + "d" * len(values), *values))
+
+    assert hashlib.sha256(b"|".join(semantic_parts)).hexdigest() == (
+        "97f05b31d17f9a85e6c943d4af7f79eff5c2253730644335f63770d2da5448dd"
+    )
 
 
 @pytest.mark.parametrize("relative_name", ["../__init__.py", "/tmp/outside.txt"])

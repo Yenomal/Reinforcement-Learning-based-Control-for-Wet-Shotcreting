@@ -1,7 +1,7 @@
 seed: 42
 spray_angle_range_deg: [-60.0, 60.0]
-spray_standoff_distance: 1.5
-axial_margin_ratio: 0.05
+spray_standoff_distance: 0.5
+axial_margin_ratio: 0.1
 tunnel_axial_scale: 1.5
 use_reachability_map: true
 reachability_map_path: outputs/reachability/reachability_map.npz

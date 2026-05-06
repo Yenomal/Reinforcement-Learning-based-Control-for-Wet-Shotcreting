@@ -2,7 +2,14 @@ seed: 42
 device: cuda
 env_backend: torch
 num_envs: 256
-lr_schedule: cosine
+deterministic_eval:
+  enable: true
+  interval_updates: 20
+  episodes: 256
+  num_envs: ${..num_envs}
+  seed: 123
+  backend: ${..env_backend}
+lr_schedule: none
 lr_min_ratio: 0.1
 log_interval: 1
 runs_root: outputs/runs

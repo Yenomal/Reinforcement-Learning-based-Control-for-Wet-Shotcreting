@@ -18,7 +18,7 @@ from rl_robot.algorithms.buffer import (
     ReplayBuffer,
 )
 from rl_robot.algorithms.lr_schedule import OptimizerLRScheduler, ScalarScheduler
-from rl_robot.algorithms.ppo import PPOAgent, build_ppo_config
+from rl_robot.algorithms.ppo import PPOAgent, build_ppo_config, resolve_ppo_std_config
 from rl_robot.algorithms.sac import SACAgent, build_sac_config
 from rl_robot.envs.train_env import BaseTrainEnv, build_train_env
 
@@ -30,7 +30,13 @@ from .artifacts import (
     save_training_curves,
     write_metrics_csv,
 )
-from .eval_hooks import build_action_scale_scheduler
+from .eval_hooks import (
+    DeterministicEvalRunner,
+    build_action_scale_scheduler,
+    build_ppo_std_runtime_controller,
+    resolve_deterministic_eval_config,
+    run_deterministic_evaluation,
+)
 from .metrics import build_metrics, log_metrics
 
 
@@ -112,10 +118,12 @@ def run_ppo_training(
     device: torch.device,
     start_progress: int = 0,
     metrics_history: List[Dict[str, Any]] | None = None,
+    resume_extra_state: Dict[str, Any] | None = None,
 ) -> None:
     """Train PPO using an on-policy rollout buffer."""
     train_cfg = config.get("train", {})
     ppo_cfg = build_ppo_config(config.get("ppo", {}))
+    ppo_std_cfg = resolve_ppo_std_config(config.get("ppo", {}))
 
     total_updates = int(config.get("ppo", {}).get("total_updates", 200))
     target_rollout_steps = int(ppo_cfg["rollout_steps"])
@@ -128,23 +136,29 @@ def run_ppo_training(
         schedule=str(train_cfg.get("lr_schedule", "none")),
         min_ratio=float(train_cfg.get("lr_min_ratio", 0.1)),
     )
-    exploration_cfg = dict(ppo_cfg.get("exploration_schedule", {}))
-    exploration_scheduler = None
-    if bool(exploration_cfg.get("enable", False)):
-        default_log_std = agent.get_log_std_value()
-        exploration_scheduler = ScalarScheduler(
-            start_value=float(
-                exploration_cfg.get("start_log_std", default_log_std)
-            ),
-            end_value=float(
-                exploration_cfg.get("end_log_std", default_log_std)
-            ),
-            total_progress=total_updates,
-            schedule=str(exploration_cfg.get("schedule", "cosine")),
-        )
     action_scale_scheduler = build_action_scale_scheduler(
         config.get("rl", {}),
         total_progress=total_updates,
+    )
+    ppo_std_controller = build_ppo_std_runtime_controller(
+        agent=agent,
+        ppo_cfg=ppo_cfg,
+        ppo_std_cfg=ppo_std_cfg,
+        total_updates=total_updates,
+    )
+    ppo_std_controller.load_state_dict(
+        None if resume_extra_state is None else resume_extra_state.get("ppo_std_runtime")
+    )
+    det_eval_cfg = resolve_deterministic_eval_config(config)
+    det_eval_runner = (
+        DeterministicEvalRunner(
+            config=config,
+            device=device,
+            backend=str(det_eval_cfg["backend"]),
+            num_envs=int(det_eval_cfg["num_envs"]),
+        )
+        if det_eval_cfg["enable"]
+        else None
     )
 
     if total_updates <= 0:
@@ -165,52 +179,104 @@ def run_ppo_training(
     print(f"Resume from update: {start_progress}")
     print(f"Rollout steps per env: {rollout_steps}")
     print(f"Effective rollout batch size: {rollout_batch_size}")
-    print(f"Exploration schedule: {'on' if exploration_scheduler is not None else 'off'}")
+    print(
+        "Exploration schedule: "
+        f"{'on' if ppo_std_controller.legacy_exploration_scheduler is not None else 'off'}"
+    )
     print(f"Action scale schedule: {'on' if action_scale_scheduler is not None else 'off'}")
+    print(
+        f"PPO std schedule: {'on' if ppo_std_controller.ppo_std_scheduler is not None else 'off'}"
+    )
+    print(f"Deterministic eval: {'on' if det_eval_runner is not None else 'off'}")
 
     train_start_time = perf_counter()
+    try:
+        for update in range(start_progress + 1, total_updates + 1):
+            progress = update - 1
+            lr_metrics = lr_scheduler.step(progress)
+            terminal_metrics: Dict[str, Any] = {}
+            if action_scale_scheduler is not None:
+                action_scale_ratio = action_scale_scheduler.step(progress)
+                env.set_action_scale_ratio(action_scale_ratio)
+                terminal_metrics["action_scale"] = env.get_action_scale_ratio()
+            terminal_metrics.update(ppo_std_controller.before_rollout(progress=progress))
+            batch, observation, episode_summaries = collect_on_policy_rollout(
+                env=env,
+                agent=agent,
+                rollout_steps=rollout_steps,
+                device=device,
+                observation=observation,
+            )
+            update_metrics = agent.update(batch)
+            update_metrics.update(lr_metrics)
+            elapsed = max(perf_counter() - train_start_time, 1e-6)
+            update_metrics["env_steps_per_sec"] = (update * rollout_batch_size) / elapsed
+            rollout_metrics = {
+                "batch_reward_mean": float(batch.rewards.mean().detach().cpu().item()),
+                "batch_done_rate": float(batch.dones.mean().detach().cpu().item()),
+            }
+            metrics = build_metrics(
+                update,
+                episode_summaries,
+                update_metrics,
+                rollout_metrics=rollout_metrics,
+            )
 
-    for update in range(start_progress + 1, total_updates + 1):
-        lr_metrics = lr_scheduler.step(update - 1)
-        terminal_metrics: Dict[str, Any] = {}
-        if action_scale_scheduler is not None:
-            action_scale_ratio = action_scale_scheduler.step(update - 1)
-            env.set_action_scale_ratio(action_scale_ratio)
-            terminal_metrics["action_scale"] = env.get_action_scale_ratio()
-        if exploration_scheduler is not None:
-            scheduled_log_std = exploration_scheduler.step(update - 1)
-            agent.set_log_std_value(scheduled_log_std)
-            terminal_metrics["ppo_log_std"] = agent.get_log_std_value()
-            terminal_metrics["ppo_std"] = agent.get_std_value()
-        batch, observation, episode_summaries = collect_on_policy_rollout(
-            env=env,
-            agent=agent,
-            rollout_steps=rollout_steps,
-            device=device,
-            observation=observation,
-        )
-        update_metrics = agent.update(batch)
-        update_metrics.update(lr_metrics)
-        elapsed = max(perf_counter() - train_start_time, 1e-6)
-        update_metrics["env_steps_per_sec"] = (update * rollout_batch_size) / elapsed
-        rollout_metrics = {
-            "batch_reward_mean": float(batch.rewards.mean().detach().cpu().item()),
-            "batch_done_rate": float(batch.dones.mean().detach().cpu().item()),
-        }
-        metrics = build_metrics(
-            update,
-            episode_summaries,
-            update_metrics,
-            rollout_metrics=rollout_metrics,
-        )
-        metrics_history.append(metrics)
+            ppo_std_state = ppo_std_controller.after_rollout(
+                progress=progress,
+                metrics=metrics,
+            )
+            metrics.update(ppo_std_state)
+            terminal_metrics.update(ppo_std_state)
 
-        if log_interval > 0 and update % log_interval == 0:
-            log_metrics("Update", metrics, terminal_metrics=terminal_metrics)
+            if (
+                det_eval_runner is not None
+                and update % int(det_eval_cfg["interval_updates"]) == 0
+            ):
+                det_metrics = run_deterministic_evaluation(
+                    runner=det_eval_runner,
+                    agent=agent,
+                    device=device,
+                    episodes=int(det_eval_cfg["episodes"]),
+                    seed=int(det_eval_cfg["seed"]),
+                    action_scale_ratio=env.get_action_scale_ratio(),
+                )
+                metrics.update(det_metrics)
+                terminal_metrics.update(
+                    {
+                        key: det_metrics[key]
+                        for key in (
+                            "det_success_rate",
+                            "det_mean_min_goal_distance",
+                            "det_mean_length",
+                        )
+                        if key in det_metrics
+                    }
+                )
+
+            metrics_history.append(metrics)
+
+            if log_interval > 0 and update % log_interval == 0:
+                log_metrics("Update", metrics, terminal_metrics=terminal_metrics)
+    finally:
+        if det_eval_runner is not None:
+            det_eval_runner.close()
 
     write_metrics_csv(run_dir, metrics_history)
     save_training_curves(run_dir, metrics_history)
-    save_checkpoint(run_dir, "final.pt", agent, config, total_updates, metrics_history[-1])
+    extra_state: Dict[str, Any] = {}
+    ppo_std_state = ppo_std_controller.state_dict()
+    if ppo_std_state is not None:
+        extra_state["ppo_std_runtime"] = ppo_std_state
+    save_checkpoint(
+        run_dir,
+        "final.pt",
+        agent,
+        config,
+        total_updates,
+        metrics_history[-1],
+        extra_state=extra_state or None,
+    )
     print(f"\nTraining complete. Final artifacts saved to: {run_dir}")
     print(f"Metrics CSV: {run_dir / 'metrics.csv'}")
     print(f"Curves HTML: {run_dir / 'training_curves.html'}")
@@ -503,6 +569,11 @@ def run_training(cfg: Any) -> None:
                 device=device,
                 start_progress=start_progress,
                 metrics_history=metrics_history,
+                resume_extra_state=(
+                    resume_payload.get("extra_state", {})
+                    if resume_payload is not None and resume_training
+                    else None
+                ),
             )
             return
 

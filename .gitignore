@@ -5,6 +5,11 @@
 # outputs
 outputs/
 
+# packaging
+build/
+dist/
+*.egg-info/
+
 # AI
 .codex/
 .superpowers/

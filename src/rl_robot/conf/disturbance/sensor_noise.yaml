@@ -1,5 +1,5 @@
 sensor_noise:
-  enable: false
+  enable: true
   current_point_step_std: 0.01
   current_point_bias_std: 0.02
   goal_point_step_std: 0.0

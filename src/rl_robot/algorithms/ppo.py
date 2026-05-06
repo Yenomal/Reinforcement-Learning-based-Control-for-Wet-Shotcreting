@@ -17,10 +17,37 @@ from ..models.mlp import build_state_network
 
 SQUASH_EPS = 1.0e-6
 
+DEFAULT_PPO_STD_CONFIG: Dict[str, Any] = {
+    "mode": "cosine_schedule",
+    "global_log_std": -1.0,
+    "min_log_std": -10.0,
+    "switch_update": 150,
+    "schedule": {
+        "schedule": "cosine",
+        "start_log_std": -1.0,
+        "end_log_std": -3.67,
+    },
+    "success_trigger": {
+        "success_threshold": 0.90,
+        "log_std_step": -0.01,
+        "ema_alpha": 1.0,
+        "patience_updates": 20,
+        "cooldown_updates": 0,
+        "min_episodes_in_window": 0,
+    },
+}
+
+DEFAULT_PPO_EXPLORATION_SCHEDULE: Dict[str, Any] = {
+    "enable": True,
+    "schedule": DEFAULT_PPO_STD_CONFIG["schedule"]["schedule"],
+    "start_log_std": DEFAULT_PPO_STD_CONFIG["schedule"]["start_log_std"],
+    "end_log_std": DEFAULT_PPO_STD_CONFIG["schedule"]["end_log_std"],
+}
+
 DEFAULT_PPO_CONFIG: Dict[str, Any] = {
     "gamma": 0.99,
     "lr": 3.0e-4,
-    "init_log_std": -2.0,
+    "init_log_std": DEFAULT_PPO_STD_CONFIG["global_log_std"],
     "gae_lambda": 0.95,
     "clip_ratio": 0.2,
     "value_coef": 0.5,
@@ -31,17 +58,20 @@ DEFAULT_PPO_CONFIG: Dict[str, Any] = {
     "update_epochs": 10,
     "minibatch_size": 512,
     "normalize_advantages": True,
-    "exploration_schedule": {
-        "enable": True,
-        "schedule": "cosine",
-        "start_log_std": -1.0,
-        "end_log_std": -8.0,
-    },
+    "std": copy.deepcopy(DEFAULT_PPO_STD_CONFIG),
+    "exploration_schedule": copy.deepcopy(DEFAULT_PPO_EXPLORATION_SCHEDULE),
 }
 
 
 def build_ppo_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Build PPO hyperparameters from the project defaults."""
+    def _deep_update(base: Dict[str, Any], update: Dict[str, Any]) -> None:
+        for key, value in update.items():
+            if isinstance(base.get(key), dict) and isinstance(value, dict):
+                _deep_update(base[key], value)
+            else:
+                base[key] = value
+
     resolved = copy.deepcopy(DEFAULT_PPO_CONFIG)
     if overrides is None:
         return resolved
@@ -52,20 +82,206 @@ def build_ppo_config(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
                 isinstance(DEFAULT_PPO_CONFIG[key], dict)
                 and isinstance(overrides[key], dict)
             ):
-                resolved[key].update(overrides[key])
+                _deep_update(resolved[key], overrides[key])
             else:
                 resolved[key] = overrides[key]
+
+    legacy_schedule_cfg = dict(resolved.get("exploration_schedule", {}))
+    std_schedule_cfg = dict(resolved["std"].get("schedule", {}))
+    legacy_schedule_enabled = bool(legacy_schedule_cfg.get("enable", False))
+    legacy_schedule_aligned = (
+        legacy_schedule_enabled
+        and str(resolved["std"].get("mode", "cosine_schedule")).lower()
+        == "cosine_schedule"
+        and float(
+            std_schedule_cfg.get(
+                "start_log_std",
+                resolved["std"]["global_log_std"],
+            )
+        )
+        == float(
+            legacy_schedule_cfg.get(
+                "start_log_std",
+                resolved["init_log_std"],
+            )
+        )
+    ) or (
+        not legacy_schedule_enabled
+        and str(resolved["std"].get("mode", "cosine_schedule")).lower()
+        == "global_learned"
+    )
+    std_from_legacy_defaults = (
+        "std" in overrides
+        and overrides["std"] == resolved["std"]
+        and "exploration_schedule" in overrides
+        and legacy_schedule_aligned
+    )
+
+    if "std" in overrides and not std_from_legacy_defaults:
+        resolved["exploration_schedule"]["enable"] = False
+        std_mode = str(resolved["std"].get("mode", "cosine_schedule")).lower()
+        schedule_cfg = dict(resolved["std"].get("schedule", {}))
+        if std_mode in {"cosine_schedule", "cosine_then_success_rate_triggered"}:
+            raw_std_cfg = overrides["std"]
+            raw_schedule_cfg = raw_std_cfg.get("schedule", {})
+            if "global_log_std" in raw_std_cfg and "start_log_std" not in raw_schedule_cfg:
+                schedule_cfg["start_log_std"] = float(resolved["std"]["global_log_std"])
+            elif "start_log_std" in raw_schedule_cfg and "global_log_std" not in raw_std_cfg:
+                resolved["std"]["global_log_std"] = float(schedule_cfg["start_log_std"])
+            resolved["std"]["schedule"] = schedule_cfg
+        public_schedule_name = str(
+            schedule_cfg.get(
+                "schedule",
+                resolved["exploration_schedule"].get("schedule", "cosine"),
+            )
+        )
+        if std_mode in {"cosine_schedule", "cosine_then_success_rate_triggered"}:
+            public_start_log_std = float(
+                schedule_cfg.get(
+                    "start_log_std",
+                    resolved["std"]["global_log_std"],
+                )
+            )
+            public_end_log_std = float(
+                schedule_cfg.get(
+                    "end_log_std",
+                    public_start_log_std,
+                )
+            )
+        else:
+            public_start_log_std = float(resolved["std"]["global_log_std"])
+            public_end_log_std = float(resolved["std"]["global_log_std"])
+        resolved["exploration_schedule"]["schedule"] = public_schedule_name
+        resolved["exploration_schedule"]["start_log_std"] = public_start_log_std
+        resolved["exploration_schedule"]["end_log_std"] = public_end_log_std
+        resolved["init_log_std"] = float(
+            resolved["std"].get("global_log_std", resolved["init_log_std"])
+        )
+
+    if (
+        "std" not in overrides
+        or std_from_legacy_defaults
+    ):
+        if "init_log_std" in overrides:
+            init_log_std = float(resolved["init_log_std"])
+            resolved["std"]["global_log_std"] = init_log_std
+            resolved["std"]["schedule"]["start_log_std"] = init_log_std
+        if (
+            "exploration_schedule" in overrides
+        ):
+            if legacy_schedule_cfg.get("enable", False):
+                resolved["std"]["mode"] = "cosine_schedule"
+                if "schedule" in legacy_schedule_cfg:
+                    resolved["std"]["schedule"]["schedule"] = str(
+                        legacy_schedule_cfg["schedule"]
+                    )
+                if "start_log_std" in legacy_schedule_cfg:
+                    start_log_std = float(legacy_schedule_cfg["start_log_std"])
+                    resolved["init_log_std"] = start_log_std
+                    resolved["std"]["global_log_std"] = start_log_std
+                    resolved["std"]["schedule"]["start_log_std"] = start_log_std
+                if "end_log_std" in legacy_schedule_cfg:
+                    resolved["std"]["schedule"]["end_log_std"] = float(
+                        legacy_schedule_cfg["end_log_std"]
+                    )
+            else:
+                resolved["std"]["mode"] = "global_learned"
+                resolved["exploration_schedule"]["start_log_std"] = float(
+                    resolved["std"]["global_log_std"]
+                )
+                resolved["exploration_schedule"]["end_log_std"] = float(
+                    resolved["std"]["global_log_std"]
+                )
     return resolved
 
 
 def resolve_ppo_std_config(
     overrides: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Resolve the PPO exploration-std schedule config."""
-    resolved = build_ppo_config(overrides)
-    exploration_schedule = dict(resolved.get("exploration_schedule", {}))
-    exploration_schedule.setdefault("init_log_std", resolved["init_log_std"])
-    return exploration_schedule
+    """Resolve PPO std behavior from the current config and legacy fields."""
+    algorithm_cfg = {} if overrides is None else overrides
+    resolved_cfg = build_ppo_config(algorithm_cfg)
+    std_cfg = copy.deepcopy(resolved_cfg["std"])
+    legacy_schedule_cfg = dict(resolved_cfg.get("exploration_schedule", {}))
+    raw_std_cfg = algorithm_cfg.get("std")
+    legacy_schedule_requested = "exploration_schedule" in algorithm_cfg
+    std_is_default_tree = raw_std_cfg == DEFAULT_PPO_STD_CONFIG
+
+    if raw_std_cfg is None and "init_log_std" in algorithm_cfg:
+        init_log_std = float(resolved_cfg["init_log_std"])
+        std_cfg["global_log_std"] = init_log_std
+        schedule_cfg = dict(std_cfg.get("schedule", {}))
+        schedule_cfg["start_log_std"] = init_log_std
+        std_cfg["schedule"] = schedule_cfg
+
+    if legacy_schedule_requested and (raw_std_cfg is None or std_is_default_tree):
+        legacy_schedule_enabled = bool(legacy_schedule_cfg.get("enable", False))
+        if legacy_schedule_enabled:
+            legacy_start_log_std = float(
+                legacy_schedule_cfg.get(
+                    "start_log_std",
+                    std_cfg["schedule"].get(
+                        "start_log_std",
+                        std_cfg.get("global_log_std", resolved_cfg["init_log_std"]),
+                    ),
+                )
+            )
+            std_cfg["global_log_std"] = legacy_start_log_std
+            std_cfg["mode"] = "cosine_schedule"
+            std_cfg["schedule"].update(
+                {
+                    "schedule": str(
+                        legacy_schedule_cfg.get(
+                            "schedule",
+                            std_cfg["schedule"].get("schedule", "cosine"),
+                        )
+                    ),
+                    "start_log_std": legacy_start_log_std,
+                    "end_log_std": float(
+                        legacy_schedule_cfg.get(
+                            "end_log_std",
+                            std_cfg["schedule"].get(
+                                "end_log_std",
+                                std_cfg.get(
+                                    "global_log_std",
+                                    resolved_cfg["init_log_std"],
+                                ),
+                            ),
+                        )
+                    ),
+                }
+            )
+        else:
+            std_cfg["mode"] = "global_learned"
+
+    std_cfg["mode"] = str(std_cfg.get("mode", "cosine_schedule")).lower()
+    if isinstance(raw_std_cfg, dict):
+        raw_schedule_cfg = raw_std_cfg.get("schedule", {})
+        has_explicit_global_log_std = "global_log_std" in raw_std_cfg
+        has_explicit_start_log_std = (
+            isinstance(raw_schedule_cfg, dict)
+            and "start_log_std" in raw_schedule_cfg
+        )
+        if std_cfg["mode"] in {
+            "cosine_schedule",
+            "cosine_then_success_rate_triggered",
+        }:
+            if has_explicit_global_log_std and not has_explicit_start_log_std:
+                std_cfg["schedule"]["start_log_std"] = float(std_cfg["global_log_std"])
+            elif has_explicit_start_log_std and not has_explicit_global_log_std:
+                std_cfg["global_log_std"] = float(std_cfg["schedule"]["start_log_std"])
+    if "global_log_std" not in std_cfg:
+        std_cfg["global_log_std"] = float(resolved_cfg["init_log_std"])
+    std_cfg["global_log_std"] = float(std_cfg["global_log_std"])
+    std_cfg["min_log_std"] = float(
+        std_cfg.get("min_log_std", DEFAULT_PPO_STD_CONFIG["min_log_std"])
+    )
+    if std_cfg["min_log_std"] > std_cfg["global_log_std"]:
+        raise ValueError("ppo.std.min_log_std must be <= ppo.std.global_log_std.")
+    std_cfg["switch_update"] = max(int(std_cfg.get("switch_update", 0)), 0)
+    std_cfg["schedule"] = dict(std_cfg.get("schedule", {}))
+    std_cfg["success_trigger"] = dict(std_cfg.get("success_trigger", {}))
+    return std_cfg
 
 
 class RunningValueNormalizer:
@@ -145,8 +361,23 @@ class PPOAgent:
     ) -> None:
         self.device = device
         resolved_cfg = build_ppo_config(algorithm_cfg)
-
-        init_log_std = float(resolved_cfg["init_log_std"])
+        std_cfg = resolve_ppo_std_config(algorithm_cfg)
+        self.std_mode = str(std_cfg["mode"]).lower()
+        valid_std_modes = {
+            "cosine_schedule",
+            "cosine_then_success_rate_triggered",
+            "success_rate_triggered",
+            "global_fixed",
+            "global_learned",
+        }
+        if self.std_mode not in valid_std_modes:
+            raise ValueError(
+                "Unsupported PPO std mode: "
+                f"{self.std_mode}. Expected one of {sorted(valid_std_modes)}."
+            )
+        self.global_log_std = float(std_cfg["global_log_std"])
+        self.log_std_min = float(std_cfg["min_log_std"])
+        self.use_scheduled_exploration = self.std_mode != "global_learned"
 
         self.actor = build_state_network(
             input_dim=observation_dim,
@@ -159,21 +390,19 @@ class PPOAgent:
             model_cfg=model_cfg,
         ).to(self.device)
         self.log_std = nn.Parameter(
-            torch.full((action_dim,), init_log_std, device=self.device)
+            torch.full((action_dim,), self.global_log_std, device=self.device)
         )
-        exploration_schedule_cfg = dict(algorithm_cfg.get("exploration_schedule", {}))
-        self.use_scheduled_exploration = bool(exploration_schedule_cfg.get("enable", False))
-        self.log_std.requires_grad_(not self.use_scheduled_exploration)
+        self.log_std.requires_grad_(self.std_mode == "global_learned")
 
         parameters = list(self.actor.parameters()) + list(self.critic.parameters())
-        if not self.use_scheduled_exploration:
+        if self.log_std.requires_grad:
             parameters.append(self.log_std)
         self.optimizer = torch.optim.Adam(
             parameters,
             lr=float(resolved_cfg["lr"]),
         )
 
-        self.gamma = float(algorithm_cfg.get("gamma", 0.99))
+        self.gamma = float(resolved_cfg["gamma"])
         self.gae_lambda = float(resolved_cfg["gae_lambda"])
         self.clip_ratio = float(resolved_cfg["clip_ratio"])
         self.value_coef = float(resolved_cfg["value_coef"])
@@ -187,12 +416,13 @@ class PPOAgent:
 
     def _distribution(self, observations: torch.Tensor) -> Normal:
         mean = self.actor(observations)
-        std = torch.exp(self.log_std).expand_as(mean)
+        log_std = self.log_std.view(1, -1).expand_as(mean)
+        std = torch.exp(log_std)
         return Normal(mean, std)
 
     def set_log_std_value(self, value: float) -> None:
         with torch.no_grad():
-            self.log_std.fill_(float(value))
+            self.log_std.fill_(max(float(value), self.log_std_min))
 
     def get_log_std_value(self) -> float:
         return float(self.log_std.detach().mean().cpu().item())
@@ -301,10 +531,25 @@ class PPOAgent:
 
     def update(self, batch: OnPolicyBatch) -> Dict[str, float]:
         returns, advantages = self.compute_returns_and_advantages(batch)
+        value_predictions = batch.values
 
         observations = batch.observations
         actions = batch.actions
         old_log_probs = batch.log_probs
+
+        flat_returns = returns.reshape(-1)
+        flat_value_predictions = value_predictions.reshape(-1)
+        returns_var = torch.var(flat_returns, unbiased=False)
+        if float(returns_var.detach().cpu().item()) <= 1.0e-12:
+            explained_variance = float("nan")
+        else:
+            residual_var = torch.var(
+                flat_returns - flat_value_predictions,
+                unbiased=False,
+            )
+            explained_variance = float(
+                (1.0 - residual_var / returns_var).detach().cpu().item()
+            )
 
         if self.normalize_advantages:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -374,12 +619,12 @@ class PPOAgent:
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters())
-                    + list(self.critic.parameters())
-                    + [self.log_std],
-                    self.max_grad_norm,
+                grad_parameters = list(self.actor.parameters()) + list(
+                    self.critic.parameters()
                 )
+                if self.log_std.requires_grad:
+                    grad_parameters.append(self.log_std)
+                nn.utils.clip_grad_norm_(grad_parameters, self.max_grad_norm)
                 self.optimizer.step()
 
                 last_policy_loss = float(policy_loss.item())
@@ -387,24 +632,50 @@ class PPOAgent:
                 last_entropy = float(entropy_bonus.item())
                 last_kl = float((mb_old_log_probs - new_log_probs).mean().item())
 
+        log_std_mean = self.get_log_std_value()
+        std_mean = self.get_std_value()
+
         return {
             "policy_loss": last_policy_loss,
             "value_loss": last_value_loss,
             "entropy": last_entropy,
             "approx_kl": last_kl,
+            "explained_variance": explained_variance,
             "returns_mean": float(returns.mean().item()),
             "normalized_returns_mean": float(normalized_returns.mean().item()),
             "advantages_mean": float(advantages.mean().item()),
+            "ppo_log_std_mean": log_std_mean,
+            "ppo_std_mean": std_mean,
         }
 
     def state_dict(self) -> Dict[str, Any]:
         return {
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
-            "log_std": self.log_std.detach().cpu(),
             "optimizer": self.optimizer.state_dict(),
             "value_normalizer": self.value_normalizer.state_dict(),
+            "std_mode": self.std_mode,
+            "log_std": self.log_std.detach().cpu(),
         }
+
+    def _optimizer_state_matches_current_parameters(
+        self,
+        checkpoint_state: Dict[str, Any],
+    ) -> bool:
+        optimizer_state = checkpoint_state.get("optimizer")
+        if not isinstance(optimizer_state, dict):
+            return False
+
+        current_groups = self.optimizer.state_dict().get("param_groups", [])
+        saved_groups = optimizer_state.get("param_groups", [])
+        if len(saved_groups) != len(current_groups):
+            return False
+
+        for saved_group, current_group in zip(saved_groups, current_groups):
+            if len(saved_group.get("params", [])) != len(current_group.get("params", [])):
+                return False
+
+        return True
 
     def load_policy_state(self, state_dict: Dict[str, Any]) -> None:
         """Load actor, critic, and log_std from a checkpoint payload."""
@@ -421,7 +692,13 @@ class PPOAgent:
     def load_training_state(self, state_dict: Dict[str, Any]) -> None:
         """Load full PPO training state, including optimizer."""
         self.load_policy_state(state_dict)
-        if "optimizer" in state_dict:
-            self.optimizer.load_state_dict(state_dict["optimizer"])
+        if (
+            "optimizer" in state_dict
+            and self._optimizer_state_matches_current_parameters(state_dict)
+        ):
+            try:
+                self.optimizer.load_state_dict(state_dict["optimizer"])
+            except ValueError:
+                pass
         self.actor.train()
         self.critic.train()
